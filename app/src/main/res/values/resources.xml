@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">ScreenLink Pro</string>
+    <string name="capture_channel">Screen sharing</string>
+    <string name="capture_title">ScreenLink is sharing your screen</string>
+    <string name="capture_text">Your screen is being shared securely on the local network.</string>
+    <color name="brand_blue">#2563EB</color>
+    <color name="brand_navy">#0F172A</color>
+</resources>
