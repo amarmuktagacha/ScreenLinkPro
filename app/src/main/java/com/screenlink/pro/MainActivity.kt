@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -119,7 +120,10 @@ private fun HostScreen(onBack: () -> Unit) {
             }
         }
         Spacer(Modifier.height(20.dp))
-        error?.let { ErrorCard(it); Spacer(Modifier.height(12.dp)) }
+        if (error != null) {
+            ErrorCard(error!!)
+            Spacer(Modifier.height(12.dp))
+        }
         if (!sharing) Button({ projectionLauncher.launch((context.getSystemService(MediaProjectionManager::class.java)).createScreenCaptureIntent()) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = ip != null) { Text("Start sharing", fontWeight = FontWeight.Bold) }
         else OutlinedButton({ context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); sharing = false; code = Pairing.generate() }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Stop sharing") }
     }
@@ -137,7 +141,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))
             Spacer(Modifier.height(18.dp))
             Button({ scanLauncher.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Point at the host QR code").setBeepEnabled(false).setOrientationLocked(false)) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(10.dp)); Text("Scan QR code", fontWeight = FontWeight.Bold) }
-            Spacer(Modifier.height(22.dp)); HorizontalDivider(); Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(22.dp)); Divider(); Spacer(Modifier.height(18.dp))
             OutlinedTextField(value = host, onValueChange = { value: String -> host = value.trim() }, label = { Text("Host IP address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp)); OutlinedTextField(value = code, onValueChange = { value: String -> code = Pairing.normalize(value) }, label = { Text("6-digit pairing code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(22.dp)); Button({ client.onConnected = { w, h -> size = w to h; connected = true }; client.onFrame = { decoder?.feed(it) }; client.connect(host, port, code) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
