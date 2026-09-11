@@ -34,3 +34,7 @@ The QR payload contains the local IP address, TCP port (`47821`), six-digit pair
 ## Notes
 
 The sandbox used for source generation does not contain an Android SDK, so APK compilation could not be executed here. The source tree has been checked for required project files, resource references, and balanced Kotlin structure; Android Studio should be used for the final device build and testing.
+
+### Saved hotspot profiles
+
+The Host screen can save up to ten hotspot profiles locally on the device. Tap a saved profile to reuse it, or tap the trash icon to remove it. The profiles are stored in Android app-private preferences and are never uploaded.

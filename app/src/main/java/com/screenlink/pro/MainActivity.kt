@@ -17,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -82,12 +84,15 @@ private fun ScreenLinkApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppScaffold(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+private fun AppScaffold(title: String, onBack: () -> Unit, scrollable: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
     Scaffold(topBar = {
         TopAppBar(title = { Text(title, fontWeight = FontWeight.Bold) }, navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
         })
-    }) { padding -> Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 22.dp), content = content) }
+    }) { padding ->
+        val contentModifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 22.dp).let { base -> if (scrollable) base.verticalScroll(rememberScrollState()) else base }
+        Column(contentModifier, content = content)
+    }
 }
 
 @Composable
@@ -113,6 +118,8 @@ private fun HostScreen(onBack: () -> Unit) {
     var code by rememberSaveable { mutableStateOf(Pairing.generate()) }
     var wifiName by rememberSaveable { mutableStateOf("") }
     var wifiPassword by rememberSaveable { mutableStateOf("") }
+    val wifiStore = remember { SavedWifiStore(context) }
+    var savedWifi by remember { mutableStateOf(wifiStore.list()) }
     var sharing by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val ip = remember { NetworkInfo.addresses().firstOrNull() }
@@ -131,6 +138,29 @@ private fun HostScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(value = wifiPassword, onValueChange = { wifiPassword = it }, label = { Text("Wi‑Fi password (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(16.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = {
+                if (wifiName.isNotBlank()) {
+                    wifiStore.save(SavedWifi(wifiName.trim(), wifiPassword))
+                    savedWifi = wifiStore.list()
+                }
+            }, enabled = wifiName.isNotBlank()) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(6.dp)); Text("Save hotspot") }
+        }
+        if (savedWifi.isNotEmpty()) {
+            Text("Saved hotspots", color = Color(0xFF64748B), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            savedWifi.forEach { profile ->
+                Card(Modifier.fillMaxWidth().padding(vertical = 3.dp), shape = RoundedCornerShape(12.dp)) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { wifiName = profile.name; wifiPassword = profile.password }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Wifi, null); Spacer(Modifier.width(8.dp)); Text(profile.name, maxLines = 1)
+                        }
+                        IconButton(onClick = { wifiStore.remove(profile.name); savedWifi = wifiStore.list() }) { Icon(Icons.Default.DeleteOutline, "Remove saved hotspot", tint = Color(0xFFDC2626)) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = SoftBlue)) {
             Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (sharing) "Sharing is active" else "Scan this QR code", color = Blue, fontWeight = FontWeight.Bold)
@@ -174,7 +204,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
         }
     }
     DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect() } }
-    AppScaffold("View a screen", onBack) {
+    AppScaffold("View a screen", onBack, scrollable = false) {
         if (!connected) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))
             Spacer(Modifier.height(18.dp))
