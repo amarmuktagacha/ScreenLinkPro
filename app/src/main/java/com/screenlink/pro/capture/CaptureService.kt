@@ -148,7 +148,7 @@ class CaptureService : Service() {
             if (index >= 0) {
                 encoder.getOutputBuffer(index)?.let { buffer ->
                     if (info.size > 0 && info.offset >= 0 && info.offset + info.size <= buffer.capacity()) {
-                        val frame = ByteArray(info.size); buffer.position(info.offset); buffer.limit(info.offset + info.size); buffer.get(frame); output.send(frame)
+                        val frame = ByteArray(info.size); buffer.position(info.offset); buffer.limit(info.offset + info.size); buffer.get(frame); output.send(frame, info.flags)
                     }
                 }
                 encoder.releaseOutputBuffer(index, false)
