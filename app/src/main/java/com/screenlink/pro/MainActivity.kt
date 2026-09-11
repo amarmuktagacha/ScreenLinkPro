@@ -12,6 +12,7 @@ import android.view.SurfaceView
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,12 +33,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.screenlink.pro.capture.CaptureService
@@ -88,13 +93,13 @@ private fun ScreenLinkApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppScaffold(title: String, onBack: () -> Unit, scrollable: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+private fun AppScaffold(title: String, onBack: () -> Unit, scrollable: Boolean = true, fullScreen: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Scaffold(topBar = {
-        TopAppBar(title = { Text(title, fontWeight = FontWeight.Bold) }, navigationIcon = {
+        if (!fullScreen) TopAppBar(title = { Text(title, fontWeight = FontWeight.Bold) }, navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
         })
-    }) { padding ->
-        val contentModifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 22.dp).let { base -> if (scrollable) base.verticalScroll(rememberScrollState()) else base }
+    }, containerColor = if (fullScreen) Color.Black else Color.White) { padding ->
+        val contentModifier = Modifier.fillMaxSize().then(if (fullScreen) Modifier else Modifier.padding(padding).padding(horizontal = 22.dp)).let { base -> if (scrollable && !fullScreen) base.verticalScroll(rememberScrollState()) else base }
         Column(contentModifier, content = content)
     }
 }
@@ -195,6 +200,21 @@ private fun ViewerScreen(onBack: () -> Unit) {
     val latestConfig = remember { AtomicReference<EncodedFrame?>(null) }
     val latestKeyFrame = remember { AtomicReference<EncodedFrame?>(null) }
     val wifi = remember { WifiConnector(context) }
+    val view = LocalView.current
+    LaunchedEffect(connected) {
+        val activity = context as? Activity
+        if (activity != null) {
+            val controller = WindowInsetsControllerCompat(activity.window, view)
+            if (connected) {
+                WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+                WindowCompat.setDecorFitsSystemWindows(activity.window, true)
+            }
+        }
+    }
     fun connectToHost(targetHost: String = host, targetPort: Int = port, targetCode: String = code) {
         client.onConnected = { w, h -> size = w to h; connected = true }
         client.onFrame = { data, flags ->
@@ -215,8 +235,9 @@ private fun ViewerScreen(onBack: () -> Unit) {
             } else connectToHost(info.host, info.port, info.code)
         }
     }
-    DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect() } }
-    AppScaffold("View a screen", onBack, scrollable = false) {
+    DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
+    BackHandler(enabled = connected) { decoder?.stop(); client.close(); wifi.disconnect(); connected = false }
+    AppScaffold("View a screen", onBack, scrollable = false, fullScreen = connected) {
         if (!connected) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))
             Spacer(Modifier.height(18.dp))
@@ -227,9 +248,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(12.dp)); OutlinedTextField(value = code, onValueChange = { value: String -> code = Pairing.normalize(value) }, label = { Text("6-digit pairing code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(22.dp)); Button({ connectToHost() }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
         } else {
-            Text("Connected to $host", color = Color(0xFF16A34A), fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(14.dp))
-            AndroidView(modifier = Modifier.fillMaxWidth().aspectRatio(if (size.first > 1 && size.second > 1) size.first.toFloat() / size.second.toFloat() else 0.56f), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null; pendingFrames.clear() } }) } })
-            Spacer(Modifier.height(16.dp)); OutlinedButton({ decoder?.stop(); client.close(); wifi.disconnect(); connected = false }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) { Text("Disconnect") }
+            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
         }
     }
 }
