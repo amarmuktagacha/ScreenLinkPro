@@ -10,6 +10,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.Log
 import android.view.WindowManager
+import android.view.Surface
 import androidx.core.app.NotificationCompat
 import com.screenlink.pro.R
 import com.screenlink.pro.network.ScreenServer
@@ -21,11 +22,12 @@ class CaptureService : Service() {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
         private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7; private const val PORT = 47821
     }
-    private data class EncoderSetup(val codec: MediaCodec, val width: Int, val height: Int)
+    private data class EncoderSetup(val codec: MediaCodec, val surface: Surface, val width: Int, val height: Int)
 
     private var projection: MediaProjection? = null
     private var display: android.hardware.display.VirtualDisplay? = null
     private var codec: MediaCodec? = null
+    private var inputSurface: Surface? = null
     private var server: ScreenServer? = null
     private var encoderThread: Thread? = null
     @Volatile private var running = false
@@ -73,11 +75,10 @@ class CaptureService : Service() {
             val requestedHeight = (screenHeight * scale).toInt().and(1.inv())
             val setup = createEncoderWithFallback(requestedWidth, requestedHeight)
             codec = setup.codec
-            val surface = setup.codec.createInputSurface()
-            setup.codec.start()
+            inputSurface = setup.surface
             display = activeProjection.createVirtualDisplay(
                 "ScreenLink", setup.width, setup.height, metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
             ) ?: error("Virtual display unavailable")
 
             val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), setup.width, setup.height)
@@ -110,6 +111,7 @@ class CaptureService : Service() {
         }
         for ((width, height) in sizes) for (info in candidates) {
             var candidate: MediaCodec? = null
+            var surface: Surface? = null
             try {
                 val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
                 val video = caps.videoCapabilities ?: continue
@@ -122,12 +124,15 @@ class CaptureService : Service() {
                 }
                 candidate = MediaCodec.createByCodecName(info.name)
                 candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                surface = candidate.createInputSurface()
+                candidate.start()
                 Log.i(TAG, "Using AVC encoder ${info.name} at ${width}x$height")
-                return EncoderSetup(candidate, width, height)
+                return EncoderSetup(candidate, surface, width, height)
             } catch (error: Exception) {
                 Log.w(TAG, "Rejected encoder ${info.name} at ${width}x$height", error)
                 try { candidate?.reset() } catch (_: Exception) {}
                 try { candidate?.release() } catch (_: Exception) {}
+                try { surface?.release() } catch (_: Exception) {}
             }
         }
         error("No compatible surface H.264 encoder found")
@@ -165,9 +170,10 @@ class CaptureService : Service() {
         try { display?.release() } catch (_: Exception) {}
         try { codec?.stop() } catch (_: Exception) {}
         try { codec?.release() } catch (_: Exception) {}
+        try { inputSurface?.release() } catch (_: Exception) {}
         try { server?.stop() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
-        display = null; codec = null; server = null; projection = null
+        display = null; codec = null; inputSurface = null; server = null; projection = null
         if (Build.VERSION.SDK_INT >= 24) try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopping = false
     }
