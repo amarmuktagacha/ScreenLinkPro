@@ -3,6 +3,7 @@ package com.screenlink.pro
 import android.app.Activity
 import android.content.Intent
 import android.Manifest
+import android.media.MediaCodec
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.os.Build
@@ -45,6 +46,7 @@ import com.screenlink.pro.capture.H264Decoder
 import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicReference
 
 private val Blue = Color(0xFF2563EB)
 private val Navy = Color(0xFF0F172A)
@@ -190,10 +192,17 @@ private fun ViewerScreen(onBack: () -> Unit) {
     var host by rememberSaveable { mutableStateOf("") }; var code by rememberSaveable { mutableStateOf("") }; var port by rememberSaveable { mutableStateOf(47821) }; var wifiName by rememberSaveable { mutableStateOf("") }; var wifiPassword by rememberSaveable { mutableStateOf("") }; var wifiStatus by rememberSaveable { mutableStateOf("") }; var connected by rememberSaveable { mutableStateOf(false) }; var size by remember { mutableStateOf(0 to 0) }; var decoder by remember { mutableStateOf<H264Decoder?>(null) }
     val client = remember { ScreenClient() }
     val pendingFrames = remember { ConcurrentLinkedQueue<EncodedFrame>() }
+    val latestConfig = remember { AtomicReference<EncodedFrame?>(null) }
+    val latestKeyFrame = remember { AtomicReference<EncodedFrame?>(null) }
     val wifi = remember { WifiConnector(context) }
     fun connectToHost(targetHost: String = host, targetPort: Int = port, targetCode: String = code) {
         client.onConnected = { w, h -> size = w to h; connected = true }
-        client.onFrame = { data, flags -> decoder?.feed(data, flags) ?: pendingFrames.offer(EncodedFrame(data, flags)) }
+        client.onFrame = { data, flags ->
+            val frame = EncodedFrame(data, flags)
+            if ((flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) latestConfig.set(frame)
+            if ((flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) latestKeyFrame.set(frame)
+            decoder?.feed(data, flags) ?: pendingFrames.offer(frame)
+        }
         client.onError = { message -> Handler(Looper.getMainLooper()).post { wifiStatus = message } }
         client.connect(targetHost, targetPort, targetCode)
     }
@@ -219,7 +228,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(22.dp)); Button({ connectToHost() }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
         } else {
             Text("Connected to $host", color = Color(0xFF16A34A), fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(14.dp))
-            AndroidView(modifier = Modifier.fillMaxWidth().aspectRatio(0.56f), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
+            AndroidView(modifier = Modifier.fillMaxWidth().aspectRatio(if (size.first > 1 && size.second > 1) size.first.toFloat() / size.second.toFloat() else 0.56f), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null; pendingFrames.clear() } }) } })
             Spacer(Modifier.height(16.dp)); OutlinedButton({ decoder?.stop(); client.close(); wifi.disconnect(); connected = false }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) { Text("Disconnect") }
         }
     }

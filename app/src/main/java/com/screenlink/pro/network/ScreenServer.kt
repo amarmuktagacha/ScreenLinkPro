@@ -15,6 +15,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
     var onError: ((String) -> Unit)? = null
     private val queue = LinkedBlockingQueue<StreamFrame>(45)
     @Volatile private var latestConfig: StreamFrame? = null
+    @Volatile private var latestKeyFrame: StreamFrame? = null
     @Volatile private var running = false
     @Volatile private var client: Socket? = null
     private var server: ServerSocket? = null
@@ -42,7 +43,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
             if (received != code) { output.writeByte(0); output.flush(); socket.close(); return }
             output.writeByte(1); output.writeInt(width); output.writeInt(height); output.flush()
             socket.soTimeout = 0
-            client?.close(); client = socket; queue.clear(); latestConfig?.let { queue.offer(it) }; onConnected?.invoke()
+            client?.close(); client = socket; queue.clear(); latestConfig?.let { queue.offer(it) }; latestKeyFrame?.let { queue.offer(it) }; onConnected?.invoke()
             writerThread?.interrupt()
             writerThread = Thread {
                 try {
@@ -61,9 +62,10 @@ class ScreenServer(private val port: Int, private val code: String, private val 
         if (!running || frame.isEmpty()) return
         val item = StreamFrame(frame, flags)
         if ((flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) latestConfig = item
+        if ((flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) latestKeyFrame = item
         if (queue.remainingCapacity() == 0) queue.poll()
         queue.offer(item)
     }
 
-    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); queue.clear(); latestConfig = null; client = null }
+    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); queue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
 }
