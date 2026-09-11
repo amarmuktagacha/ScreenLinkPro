@@ -2,10 +2,14 @@ package com.screenlink.pro
 
 import android.app.Activity
 import android.content.Intent
+import android.Manifest
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Build
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -45,7 +49,19 @@ private val SoftBlue = Color(0xFFEFF6FF)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestAppPermissions()
         setContent { ScreenLinkTheme { ScreenLinkApp() } }
+    }
+
+    private fun requestAppPermissions() {
+        val permissions = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissions += Manifest.permission.POST_NOTIFICATIONS
+            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            permissions += Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        requestPermissions(permissions.toTypedArray(), 100)
     }
 }
 
@@ -95,6 +111,8 @@ private fun HomeScreen(navigate: (String) -> Unit) {
 private fun HostScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var code by rememberSaveable { mutableStateOf(Pairing.generate()) }
+    var wifiName by rememberSaveable { mutableStateOf("") }
+    var wifiPassword by rememberSaveable { mutableStateOf("") }
     var sharing by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val ip = remember { NetworkInfo.addresses().firstOrNull() }
@@ -104,11 +122,15 @@ private fun HostScreen(onBack: () -> Unit) {
             try { ContextCompat.startForegroundService(context, service); sharing = true; error = null } catch (e: Exception) { error = "Could not start sharing. Please try again." }
         }
     }
-    val qrBitmap = remember(ip, code) { ip?.let { QrPairing.createBitmap(QrPairing.payload(it, 47821, code), 560) } }
+    val qrBitmap = remember(ip, code, wifiName, wifiPassword) { ip?.let { QrPairing.createBitmap(QrPairing.payload(it, 47821, code, wifiName.trim(), wifiPassword), 560) } }
     AppScaffold("Share your screen", { if (sharing) context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); onBack() }) {
         Text("Connect both phones to the same Wi‑Fi or hotspot.", color = Color(0xFF64748B))
         Spacer(Modifier.height(20.dp))
         if (ip == null) ErrorCard("No local network found. Connect to Wi‑Fi first.")
+        OutlinedTextField(value = wifiName, onValueChange = { wifiName = it }, label = { Text("Wi‑Fi / hotspot name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(value = wifiPassword, onValueChange = { wifiPassword = it }, label = { Text("Wi‑Fi password (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(16.dp))
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = SoftBlue)) {
             Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (sharing) "Sharing is active" else "Scan this QR code", color = Blue, fontWeight = FontWeight.Bold)
@@ -133,23 +155,39 @@ private fun HostScreen(onBack: () -> Unit) {
 @Composable
 private fun ViewerScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    var host by rememberSaveable { mutableStateOf("") }; var code by rememberSaveable { mutableStateOf("") }; var port by rememberSaveable { mutableStateOf(47821) }; var connected by rememberSaveable { mutableStateOf(false) }; var size by remember { mutableStateOf(0 to 0) }; var decoder by remember { mutableStateOf<H264Decoder?>(null) }
+    var host by rememberSaveable { mutableStateOf("") }; var code by rememberSaveable { mutableStateOf("") }; var port by rememberSaveable { mutableStateOf(47821) }; var wifiName by rememberSaveable { mutableStateOf("") }; var wifiPassword by rememberSaveable { mutableStateOf("") }; var wifiStatus by rememberSaveable { mutableStateOf("") }; var connected by rememberSaveable { mutableStateOf(false) }; var size by remember { mutableStateOf(0 to 0) }; var decoder by remember { mutableStateOf<H264Decoder?>(null) }
     val client = remember { ScreenClient() }
-    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result -> QrPairing.parse(result.contents ?: "")?.let { host = it.host; port = it.port; code = it.code } }
-    DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close() } }
+    val wifi = remember { WifiConnector(context) }
+    fun connectToHost(targetHost: String = host, targetPort: Int = port, targetCode: String = code) {
+        client.onConnected = { w, h -> size = w to h; connected = true }
+        client.onFrame = { decoder?.feed(it) }
+        client.onError = { message -> Handler(Looper.getMainLooper()).post { wifiStatus = message } }
+        client.connect(targetHost, targetPort, targetCode)
+    }
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        QrPairing.parse(result.contents ?: "")?.let { info ->
+            host = info.host; port = info.port; code = info.code; wifiName = info.ssid; wifiPassword = info.password
+            if (info.ssid.isNotBlank()) {
+                wifiStatus = "Requesting Wi‑Fi connection…"
+                wifi.connect(info.ssid, info.password) { ok, message -> Handler(Looper.getMainLooper()).post { wifiStatus = message; if (ok) connectToHost(info.host, info.port, info.code) } }
+            } else connectToHost(info.host, info.port, info.code)
+        }
+    }
+    DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect() } }
     AppScaffold("View a screen", onBack) {
         if (!connected) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))
             Spacer(Modifier.height(18.dp))
             Button({ scanLauncher.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Point at the host QR code").setBeepEnabled(false).setOrientationLocked(false)) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(10.dp)); Text("Scan QR code", fontWeight = FontWeight.Bold) }
+            if (wifiStatus.isNotBlank()) { Spacer(Modifier.height(10.dp)); Text(wifiStatus, color = Color(0xFF2563EB), fontSize = 13.sp) }
             Spacer(Modifier.height(22.dp)); Divider(); Spacer(Modifier.height(18.dp))
             OutlinedTextField(value = host, onValueChange = { value: String -> host = value.trim() }, label = { Text("Host IP address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp)); OutlinedTextField(value = code, onValueChange = { value: String -> code = Pairing.normalize(value) }, label = { Text("6-digit pairing code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(22.dp)); Button({ client.onConnected = { w, h -> size = w to h; connected = true }; client.onFrame = { decoder?.feed(it) }; client.connect(host, port, code) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
+            Spacer(Modifier.height(22.dp)); Button({ connectToHost() }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
         } else {
             Text("Connected to $host", color = Color(0xFF16A34A), fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(14.dp))
             AndroidView(modifier = Modifier.fillMaxWidth().aspectRatio(0.56f), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
-            Spacer(Modifier.height(16.dp)); OutlinedButton({ decoder?.stop(); client.close(); connected = false }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) { Text("Disconnect") }
+            Spacer(Modifier.height(16.dp)); OutlinedButton({ decoder?.stop(); client.close(); wifi.disconnect(); connected = false }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) { Text("Disconnect") }
         }
     }
 }

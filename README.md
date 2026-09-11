@@ -7,6 +7,7 @@ A clean Android 14-compatible local-network screen-sharing app. One phone acts a
 - Professional Compose-based interface
 - Six-digit pairing code
 - Instant QR-code pairing with manual code fallback
+- QR can carry Wi-Fi/hotspot SSID and password for automatic system-approved joining
 - Local Wi-Fi/hotspot streaming
 - Android 11 through current Android versions, including Android 14 media-projection rules
 - Android MediaProjection consent flow
@@ -26,7 +27,9 @@ Open the project in Android Studio Hedgehog or newer, allow Gradle sync, and run
 3. On the first phone choose **Share my screen**, grant capture permission, and copy the six-digit code.
 4. On the second phone choose **View another screen** and scan the host QR code. Manual IP/code entry is also available.
 
-The QR payload contains only a local IP address, the TCP port (`47821`), and a six-digit pairing code. The stream is sent directly over the local network; no cloud account or cache is used.
+When the host QR includes Wi-Fi details, the viewer requests an Android `WifiNetworkSpecifier` connection automatically. Android shows a system confirmation because apps cannot silently change a user's Wi-Fi network. The app requests camera, nearby Wi-Fi (Android 13+), location compatibility (Android 11–12), and notification permissions when it opens.
+
+The QR payload contains the local IP address, TCP port (`47821`), six-digit pairing code, and optional base64-encoded Wi-Fi credentials. The stream is sent directly over the local network; no cloud account or cache is used.
 
 ## Notes
 
