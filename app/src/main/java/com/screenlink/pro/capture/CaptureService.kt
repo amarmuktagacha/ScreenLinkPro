@@ -21,6 +21,7 @@ class CaptureService : Service() {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
         private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7; private const val PORT = 47821
     }
+    private data class EncoderSetup(val codec: MediaCodec, val width: Int, val height: Int)
 
     private var projection: MediaProjection? = null
     private var display: android.hardware.display.VirtualDisplay? = null
@@ -32,11 +33,9 @@ class CaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Screen sharing", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+            NotificationChannel(CHANNEL, "Screen sharing", NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -51,21 +50,14 @@ class CaptureService : Service() {
         if (running || stopping) return
         try {
             val result = intent.getIntExtra(RESULT, Activity.RESULT_CANCELED)
-            val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableExtra(DATA, Intent::class.java)
-            } else {
-                @Suppress("DEPRECATION") intent.getParcelableExtra(DATA)
-            }
+            val data: Intent? = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(DATA, Intent::class.java)
+            else @Suppress("DEPRECATION") intent.getParcelableExtra(DATA)
             require(result == Activity.RESULT_OK && data != null) { "Screen permission was not granted" }
 
-            // Android 11-13 permits foreground promotion before obtaining the token.
-            // Android 14 requires the user-approved projection token before the typed FGS.
-            val approved = if (Build.VERSION.SDK_INT >= 34) null else Unit
-            if (approved != null) startForegroundSafely()
-            val manager = getSystemService(MediaProjectionManager::class.java)
-                ?: error("MediaProjection service unavailable")
-            val activeProjection = manager.getMediaProjection(result, data!!)
-                ?: error("MediaProjection unavailable")
+            // API 34 requires the approved token before promoting this service with the projection type.
+            if (Build.VERSION.SDK_INT < 34) startForegroundSafely()
+            val manager = getSystemService(MediaProjectionManager::class.java) ?: error("MediaProjection unavailable")
+            val activeProjection = manager.getMediaProjection(result, data!!) ?: error("MediaProjection unavailable")
             projection = activeProjection
             activeProjection.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { Log.i(TAG, "Projection stopped by system"); stopAll(); stopSelf() }
@@ -73,90 +65,102 @@ class CaptureService : Service() {
             if (Build.VERSION.SDK_INT >= 34) startForegroundSafely()
 
             val metrics = android.util.DisplayMetrics()
-            @Suppress("DEPRECATION")
-            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
-            var width = metrics.widthPixels
-            var height = metrics.heightPixels
-            require(width > 1 && height > 1) { "Invalid display size" }
-            val scale = 1280f / maxOf(width, height)
-            if (scale < 1f) { width = (width * scale).toInt(); height = (height * scale).toInt() }
-            width = width and 1.inv(); height = height and 1.inv()
-            require(width >= 2 && height >= 2) { "Invalid encoder size" }
-
-            val encoder = createEncoder(width, height)
-            codec = encoder
-            val surface = encoder.createInputSurface()
-            encoder.start()
+            @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
+            val screenWidth = metrics.widthPixels; val screenHeight = metrics.heightPixels
+            require(screenWidth > 1 && screenHeight > 1) { "Invalid display size" }
+            val scale = minOf(1f, 1280f / maxOf(screenWidth, screenHeight))
+            val requestedWidth = (screenWidth * scale).toInt().and(1.inv())
+            val requestedHeight = (screenHeight * scale).toInt().and(1.inv())
+            val setup = createEncoderWithFallback(requestedWidth, requestedHeight)
+            codec = setup.codec
+            val surface = setup.codec.createInputSurface()
+            setup.codec.start()
             display = activeProjection.createVirtualDisplay(
-                "ScreenLink", width, height, metrics.densityDpi,
+                "ScreenLink", setup.width, setup.height, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null
             ) ?: error("Virtual display unavailable")
 
-            val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), width, height)
+            val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), setup.width, setup.height)
             newServer.start(); server = newServer
             running = true
-            encoderThread = Thread({ drainEncoder(encoder, newServer) }, "ScreenLinkEncoder").also { it.start() }
+            encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
         } catch (error: Throwable) {
             Log.e(TAG, "Capture startup failed", error)
-            stopAll()
-            stopSelf()
+            stopAll(); stopSelf()
         }
     }
 
-    private fun createEncoder(width: Int, height: Int): MediaCodec {
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 2_500_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 24)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+    private fun createEncoderWithFallback(requestedWidth: Int, requestedHeight: Int): EncoderSetup {
+        val sizes = linkedSetOf(
+            requestedWidth to requestedHeight,
+            (requestedWidth * 0.85f).toInt().and(1.inv()) to (requestedHeight * 0.85f).toInt().and(1.inv()),
+            (requestedWidth * 0.67f).toInt().and(1.inv()) to (requestedHeight * 0.67f).toInt().and(1.inv()),
+            720 to 1280,
+            480 to 854
+        ).filter { it.first >= 2 && it.second >= 2 }
+        val infos = try { MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.toList() } catch (e: Exception) {
+            Log.w(TAG, "Could not enumerate codecs", e); emptyList()
         }
-        val candidates = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-            .filter { it.isEncoder && it.supportedTypes.any { type -> type.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
-        for (info in candidates) {
+        val candidates = infos.filter { info ->
+            info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } &&
+                try {
+                    val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                } catch (_: Exception) { false }
+        }
+        for ((width, height) in sizes) for (info in candidates) {
+            var candidate: MediaCodec? = null
             try {
-                val codec = MediaCodec.createByCodecName(info.name)
-                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                return codec
-            } catch (error: Exception) { Log.w(TAG, "Skipping encoder ${info.name}", error) }
+                val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val video = caps.videoCapabilities ?: continue
+                if (!video.isSizeSupported(width, height)) continue
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, if (width * height > 700_000) 2_500_000 else 1_200_000)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, 20)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                }
+                candidate = MediaCodec.createByCodecName(info.name)
+                candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                Log.i(TAG, "Using AVC encoder ${info.name} at ${width}x$height")
+                return EncoderSetup(candidate, width, height)
+            } catch (error: Exception) {
+                Log.w(TAG, "Rejected encoder ${info.name} at ${width}x$height", error)
+                try { candidate?.reset() } catch (_: Exception) {}
+                try { candidate?.release() } catch (_: Exception) {}
+            }
         }
-        error("No compatible H.264 hardware encoder found")
+        error("No compatible surface H.264 encoder found")
     }
 
     private fun startForegroundSafely() {
-        val notification = NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_menu_share)
-            .setContentTitle(getString(R.string.capture_title))
-            .setContentText(getString(R.string.capture_text))
+        val notification = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_share)
+            .setContentTitle(getString(R.string.capture_title)).setContentText(getString(R.string.capture_text))
             .setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        else startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun drainEncoder(encoder: MediaCodec, output: ScreenServer) {
         val info = MediaCodec.BufferInfo()
-        while (running && !Thread.currentThread().isInterrupted) {
-            try {
-                val index = encoder.dequeueOutputBuffer(info, 10_000)
-                if (index >= 0) {
-                    encoder.getOutputBuffer(index)?.let { buffer ->
-                        if (info.size > 0) {
-                            val frame = ByteArray(info.size)
-                            buffer.position(info.offset); buffer.limit(info.offset + info.size); buffer.get(frame)
-                            output.send(frame)
-                        }
+        while (running && !Thread.currentThread().isInterrupted) try {
+            val index = encoder.dequeueOutputBuffer(info, 10_000)
+            if (index >= 0) {
+                encoder.getOutputBuffer(index)?.let { buffer ->
+                    if (info.size > 0 && info.offset >= 0 && info.offset + info.size <= buffer.capacity()) {
+                        val frame = ByteArray(info.size); buffer.position(info.offset); buffer.limit(info.offset + info.size); buffer.get(frame); output.send(frame)
                     }
-                    encoder.releaseOutputBuffer(index, false)
                 }
-            } catch (error: Exception) { if (running) Log.e(TAG, "Encoder loop stopped", error); break }
-        }
+                encoder.releaseOutputBuffer(index, false)
+            }
+        } catch (error: Exception) { if (running) Log.e(TAG, "Encoder loop stopped", error); break }
     }
 
     private fun stopAll() {
         if (stopping) return
         stopping = true; running = false
         val thread = encoderThread
-        if (Thread.currentThread() !== thread) try { thread?.join(400) } catch (_: Exception) {}
+        if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
         try { display?.release() } catch (_: Exception) {}
         try { codec?.stop() } catch (_: Exception) {}
