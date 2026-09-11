@@ -237,8 +237,11 @@ private fun ViewerScreen(onBack: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
     BackHandler(enabled = connected) { decoder?.stop(); client.close(); wifi.disconnect(); connected = false }
-    AppScaffold("View a screen", onBack, scrollable = false, fullScreen = connected) {
-        if (!connected) {
+    if (connected) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
+        }
+    } else AppScaffold("View a screen", onBack, scrollable = false) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))
             Spacer(Modifier.height(18.dp))
             Button({ scanLauncher.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Point at the host QR code").setBeepEnabled(false).setOrientationLocked(false)) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(10.dp)); Text("Scan QR code", fontWeight = FontWeight.Bold) }
@@ -247,9 +250,6 @@ private fun ViewerScreen(onBack: () -> Unit) {
             OutlinedTextField(value = host, onValueChange = { value: String -> host = value.trim() }, label = { Text("Host IP address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp)); OutlinedTextField(value = code, onValueChange = { value: String -> code = Pairing.normalize(value) }, label = { Text("6-digit pairing code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(22.dp)); Button({ connectToHost() }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), enabled = host.isNotBlank() && Pairing.valid(code)) { Text("Connect", fontWeight = FontWeight.Bold) }
-        } else {
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
-        }
     }
 }
 
