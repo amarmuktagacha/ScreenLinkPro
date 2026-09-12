@@ -11,6 +11,8 @@ import android.os.*
 import android.util.Log
 import android.view.WindowManager
 import android.view.Surface
+import android.content.ComponentCallbacks
+import android.content.res.Configuration
 import androidx.core.app.NotificationCompat
 import com.screenlink.pro.R
 import com.screenlink.pro.control.RemoteControlAccessibilityService
@@ -33,6 +35,7 @@ class CaptureService : Service() {
     private var encoderThread: Thread? = null
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
+    private var configurationCallback: ComponentCallbacks? = null
     @Volatile private var running = false
     @Volatile private var stopping = false
 
@@ -88,6 +91,15 @@ class CaptureService : Service() {
             newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
             newServer.start(); server = newServer
             running = true
+            configurationCallback = object : ComponentCallbacks {
+                override fun onConfigurationChanged(newConfig: Configuration) {
+                    val dm = android.util.DisplayMetrics()
+                    @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
+                    val factor = minOf(1f, 1280f / maxOf(dm.widthPixels, dm.heightPixels))
+                    newServer.updateVideoSize((dm.widthPixels * factor).toInt().and(1.inv()), (dm.heightPixels * factor).toInt().and(1.inv()))
+                }
+                override fun onLowMemory() {}
+            }.also { registerComponentCallbacks(it) }
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
             startPlaybackAudio(activeProjection, newServer)
         } catch (error: Throwable) {
@@ -223,6 +235,8 @@ class CaptureService : Service() {
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
+        configurationCallback?.let { try { unregisterComponentCallbacks(it) } catch (_: Exception) {} }
+        configurationCallback = null
         try { display?.release() } catch (_: Exception) {}
         try { codec?.stop() } catch (_: Exception) {}
         try { codec?.release() } catch (_: Exception) {}

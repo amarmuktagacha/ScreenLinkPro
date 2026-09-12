@@ -11,6 +11,7 @@ class ScreenClient {
     var onConnected: ((Int, Int) -> Unit)? = null
     var onFrame: ((ByteArray, Int) -> Unit)? = null
     var onAudio: ((ByteArray) -> Unit)? = null
+    var onVideoSizeChanged: ((Int, Int) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
     var onDisconnected: (() -> Unit)? = null
     @Volatile private var running = false
@@ -29,7 +30,7 @@ class ScreenClient {
                 val input = DataInputStream(s.getInputStream())
                 if (input.readByte().toInt() != 1) { onError?.invoke("Pairing code does not match"); return@Thread }
                 val w = input.readInt(); val h = input.readInt(); onConnected?.invoke(w, h)
-                while (running) { val kind = input.readInt(); val flags = input.readInt(); val size = input.readInt(); if (kind !in 0..1 || size !in 1..5_000_000) break; val packet = ByteArray(size).also { input.readFully(it) }; if (kind == 1) onAudio?.invoke(packet) else onFrame?.invoke(packet, flags) }
+                while (running) { val kind = input.readInt(); val flags = input.readInt(); val size = input.readInt(); if (kind !in 0..3 || size !in 1..5_000_000) break; val packet = ByteArray(size).also { input.readFully(it) }; when (kind) { 1 -> onAudio?.invoke(packet); 3 -> if (size == 8) { val b = java.nio.ByteBuffer.wrap(packet); onVideoSizeChanged?.invoke(b.int, b.int) }; else -> onFrame?.invoke(packet, flags) } }
             } catch (e: Exception) { if (running) onError?.invoke(e.message ?: "Could not connect")
             } finally { val notify = running; running = false; try { s?.close() } catch (_: Exception) {}; if (notify) onDisconnected?.invoke() }
         }.start()

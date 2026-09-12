@@ -226,6 +226,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
     }
     fun connectToHost(targetHost: String = host, targetPort: Int = port, targetCode: String = code) {
         client.onConnected = { w, h -> size = w to h; connected = true }
+        client.onVideoSizeChanged = { w, h -> Handler(Looper.getMainLooper()).post { size = w to h; (context as? Activity)?.requestedOrientation = if (w > h) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT; decoder?.stop(); decoder = null } }
         client.onFrame = { data, flags ->
             val frame = EncodedFrame(data, flags)
             if ((flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) latestConfig.set(frame)
@@ -245,8 +246,8 @@ private fun ViewerScreen(onBack: () -> Unit) {
             } else connectToHost(info.host, info.port, info.code)
         }
     }
-    DisposableEffect(Unit) { onDispose { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
-    BackHandler(enabled = connected) { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); connected = false }
+    DisposableEffect(Unit) { onDispose { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED; WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
+    BackHandler(enabled = connected) { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); connected = false; (context as? Activity)?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
     if (connected) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply {

@@ -87,5 +87,13 @@ class ScreenServer(private val port: Int, private val code: String, private val 
         queue.offer(item)
     }
 
+    fun updateVideoSize(newWidth: Int, newHeight: Int) {
+        if (!running || newWidth < 2 || newHeight < 2) return
+        val bytes = java.nio.ByteBuffer.allocate(8).putInt(newWidth).putInt(newHeight).array()
+        val item = StreamFrame(bytes, 0, 3)
+        if (queue.remainingCapacity() == 0) queue.poll()
+        queue.offer(item)
+    }
+
     fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); controlThread?.interrupt(); queue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
 }
