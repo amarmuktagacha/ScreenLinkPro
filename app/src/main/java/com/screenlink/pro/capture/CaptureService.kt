@@ -91,6 +91,19 @@ class CaptureService : Service() {
         }
     }
 
+    /**
+     * Returns true when [info] is a software (CPU-only) codec. On weak budget chipsets
+     * (e.g. Unisoc T615/T616 found in entry-level Tecno/Infinix/itel devices) the platform's
+     * codec list can surface a software AVC codec before — or instead of — the vendor's
+     * hardware one. Software encoding saturates an already-weak CPU and is the most common
+     * cause of capture-side lag that only shows up on low-end devices.
+     */
+    private fun isSoftwareCodec(info: MediaCodecInfo): Boolean {
+        if (Build.VERSION.SDK_INT >= 29) return !info.isHardwareAccelerated
+        val name = info.name.lowercase()
+        return name.startsWith("omx.google.") || name.startsWith("c2.android.")
+    }
+
     private fun createEncoderWithFallback(requestedWidth: Int, requestedHeight: Int): EncoderSetup {
         val sizes = linkedSetOf(
             requestedWidth to requestedHeight,
@@ -108,8 +121,11 @@ class CaptureService : Service() {
                     val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
                     caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 } catch (_: Exception) { false }
-        }
-        for ((width, height) in sizes) for (info in candidates) {
+        }.sortedBy { if (isSoftwareCodec(it)) 1 else 0 }
+        // Exhaust every hardware-accelerated encoder across all fallback sizes first;
+        // only fall back to a software encoder (last in the sorted list) if no hardware
+        // codec supports any of the candidate sizes at all.
+        for (info in candidates) for ((width, height) in sizes) {
             var candidate: MediaCodec? = null
             var surface: Surface? = null
             try {
@@ -126,7 +142,7 @@ class CaptureService : Service() {
                 candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 surface = candidate.createInputSurface()
                 candidate.start()
-                Log.i(TAG, "Using AVC encoder ${info.name} at ${width}x$height")
+                Log.i(TAG, "Using AVC encoder ${info.name} (hw=${!isSoftwareCodec(info)}) at ${width}x$height")
                 return EncoderSetup(candidate, surface, width, height)
             } catch (error: Exception) {
                 Log.w(TAG, "Rejected encoder ${info.name} at ${width}x$height", error)
