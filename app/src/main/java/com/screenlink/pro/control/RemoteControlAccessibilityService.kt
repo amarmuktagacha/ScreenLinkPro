@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.os.Bundle
+import android.view.accessibility.AccessibilityEvent
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -15,6 +16,7 @@ class RemoteControlAccessibilityService : AccessibilityService() {
     }
 
     override fun onServiceConnected() { super.onServiceConnected(); instance = this }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
     override fun onDestroy() { if (instance === this) instance = null; super.onDestroy() }
 
