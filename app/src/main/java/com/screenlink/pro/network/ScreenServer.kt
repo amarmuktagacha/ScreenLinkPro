@@ -7,7 +7,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.LinkedBlockingQueue
 
-data class StreamFrame(val bytes: ByteArray, val flags: Int)
+data class StreamFrame(val bytes: ByteArray, val flags: Int, val kind: Int = 0)
 
 class ScreenServer(private val port: Int, private val code: String, private val width: Int, private val height: Int) {
     var onConnected: (() -> Unit)? = null
@@ -50,7 +50,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
                     val out = DataOutputStream(socket.getOutputStream())
                     while (running && client === socket) {
                         val frame = queue.take()
-                        out.writeInt(frame.flags); out.writeInt(frame.bytes.size); out.write(frame.bytes); out.flush()
+                        out.writeInt(frame.kind); out.writeInt(frame.flags); out.writeInt(frame.bytes.size); out.write(frame.bytes); out.flush()
                     }
                 } catch (_: Exception) {
                 } finally { if (client === socket) { client = null; onDisconnected?.invoke() }; try { socket.close() } catch (_: Exception) {} }
@@ -63,6 +63,13 @@ class ScreenServer(private val port: Int, private val code: String, private val 
         val item = StreamFrame(frame, flags)
         if ((flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) latestConfig = item
         if ((flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) latestKeyFrame = item
+        if (queue.remainingCapacity() == 0) queue.poll()
+        queue.offer(item)
+    }
+
+    fun sendAudio(pcm: ByteArray) {
+        if (!running || pcm.isEmpty()) return
+        val item = StreamFrame(pcm, 0, 1)
         if (queue.remainingCapacity() == 0) queue.poll()
         queue.offer(item)
     }

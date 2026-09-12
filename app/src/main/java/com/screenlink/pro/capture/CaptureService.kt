@@ -30,6 +30,8 @@ class CaptureService : Service() {
     private var inputSurface: Surface? = null
     private var server: ScreenServer? = null
     private var encoderThread: Thread? = null
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var stopping = false
 
@@ -85,6 +87,7 @@ class CaptureService : Service() {
             newServer.start(); server = newServer
             running = true
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
+            startPlaybackAudio(activeProjection, newServer)
         } catch (error: Throwable) {
             Log.e(TAG, "Capture startup failed", error)
             stopAll(); stopSelf()
@@ -102,6 +105,37 @@ class CaptureService : Service() {
         if (Build.VERSION.SDK_INT >= 29) return !info.isHardwareAccelerated
         val name = info.name.lowercase()
         return name.startsWith("omx.google.") || name.startsWith("c2.android.")
+    }
+
+    private fun startPlaybackAudio(activeProjection: MediaProjection, output: ScreenServer) {
+        if (Build.VERSION.SDK_INT < 29) return
+        try {
+            val captureConfig = AudioPlaybackCaptureConfiguration.Builder(activeProjection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .build()
+            val audioFormat = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(16_000)
+                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .build()
+            val minimum = AudioRecord.getMinBufferSize(16_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val record = AudioRecord.Builder()
+                .setAudioFormat(audioFormat)
+                .setBufferSizeInBytes(maxOf(minimum, 6_400))
+                .setAudioPlaybackCaptureConfig(captureConfig)
+                .build()
+            if (record.state != AudioRecord.STATE_INITIALIZED) { record.release(); return }
+            record.startRecording()
+            audioRecord = record
+            audioThread = Thread({
+                val buffer = ByteArray(640)
+                while (running && !Thread.currentThread().isInterrupted) {
+                    val count = try { record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING) } catch (_: Exception) { -1 }
+                    if (count > 0) output.sendAudio(if (count == buffer.size) buffer.copyOf() else buffer.copyOf(count))
+                }
+            }, "ScreenLinkPlaybackAudio").also { it.start() }
+        } catch (error: Exception) { Log.w(TAG, "Playback audio capture unavailable", error) }
     }
 
     private fun createEncoderWithFallback(requestedWidth: Int, requestedHeight: Int): EncoderSetup {
@@ -183,6 +217,10 @@ class CaptureService : Service() {
         val thread = encoderThread
         if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
+        audioThread?.interrupt(); audioThread = null
+        try { audioRecord?.stop() } catch (_: Exception) {}
+        try { audioRecord?.release() } catch (_: Exception) {}
+        audioRecord = null
         try { display?.release() } catch (_: Exception) {}
         try { codec?.stop() } catch (_: Exception) {}
         try { codec?.release() } catch (_: Exception) {}

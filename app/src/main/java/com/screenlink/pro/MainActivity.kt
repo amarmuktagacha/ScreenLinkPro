@@ -48,6 +48,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 import com.screenlink.pro.capture.CaptureService
 import com.screenlink.pro.capture.EncodedFrame
 import com.screenlink.pro.capture.H264Decoder
+import com.screenlink.pro.capture.PlaybackAudioPlayer
 import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -199,9 +200,11 @@ private fun ViewerScreen(onBack: () -> Unit) {
     val pendingFrames = remember { ConcurrentLinkedQueue<EncodedFrame>() }
     val latestConfig = remember { AtomicReference<EncodedFrame?>(null) }
     val latestKeyFrame = remember { AtomicReference<EncodedFrame?>(null) }
+    val audioPlayer = remember { PlaybackAudioPlayer() }
     val wifi = remember { WifiConnector(context) }
     val view = LocalView.current
     LaunchedEffect(connected) {
+        if (connected) audioPlayer.start() else audioPlayer.stop()
         val activity = context as? Activity
         if (activity != null) {
             val controller = WindowInsetsControllerCompat(activity.window, view)
@@ -223,6 +226,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
             if ((flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) latestKeyFrame.set(frame)
             decoder?.feed(data, flags) ?: pendingFrames.offer(frame)
         }
+        client.onAudio = { packet -> audioPlayer.feed(packet) }
         client.onError = { message -> Handler(Looper.getMainLooper()).post { wifiStatus = message } }
         client.connect(targetHost, targetPort, targetCode)
     }
@@ -235,8 +239,8 @@ private fun ViewerScreen(onBack: () -> Unit) {
             } else connectToHost(info.host, info.port, info.code)
         }
     }
-    DisposableEffect(Unit) { onDispose { decoder?.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
-    BackHandler(enabled = connected) { decoder?.stop(); client.close(); wifi.disconnect(); connected = false }
+    DisposableEffect(Unit) { onDispose { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); (context as? Activity)?.let { WindowInsetsControllerCompat(it.window, view).show(WindowInsetsCompat.Type.systemBars()); WindowCompat.setDecorFitsSystemWindows(it.window, true) } } }
+    BackHandler(enabled = connected) { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); connected = false }
     if (connected) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
