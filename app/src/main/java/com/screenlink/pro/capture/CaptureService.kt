@@ -36,6 +36,14 @@ class CaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
     private var configurationCallback: ComponentCallbacks? = null
+    // The two physical panel dimensions captured once when sharing starts. Rotation never
+    // changes the panel's actual major/minor size — it only swaps which one is "width" and
+    // which is "height" — so we reuse this pair on every rotation instead of re-querying
+    // WindowManager (a Service-context WindowManager can report stale/incorrect metrics that
+    // don't reflect the display's current rotation, which was causing the video to stay stuck
+    // at its original size after rotating).
+    private var naturalMajorPx = 0
+    private var naturalMinorPx = 0
     private val pipelineLock = Any()
     @Volatile private var running = false
     @Volatile private var stopping = false
@@ -78,6 +86,8 @@ class CaptureService : Service() {
             @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
             val screenWidth = metrics.widthPixels; val screenHeight = metrics.heightPixels
             require(screenWidth > 1 && screenHeight > 1) { "Invalid display size" }
+            naturalMajorPx = maxOf(screenWidth, screenHeight)
+            naturalMinorPx = minOf(screenWidth, screenHeight)
             val scale = minOf(1f, 1280f / maxOf(screenWidth, screenHeight))
             val requestedWidth = (screenWidth * scale).toInt().and(1.inv())
             val requestedHeight = (screenHeight * scale).toInt().and(1.inv())
@@ -95,11 +105,13 @@ class CaptureService : Service() {
             running = true
             configurationCallback = object : ComponentCallbacks {
                 override fun onConfigurationChanged(newConfig: Configuration) {
-                    val dm = android.util.DisplayMetrics()
-                    @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
-                    val factor = minOf(1f, 1280f / maxOf(dm.widthPixels, dm.heightPixels))
-                    val w = (dm.widthPixels * factor).toInt().and(1.inv())
-                    val h = (dm.heightPixels * factor).toInt().and(1.inv())
+                    if (naturalMajorPx <= 1 || naturalMinorPx <= 1) return
+                    val landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+                    val targetWidth = if (landscape) naturalMajorPx else naturalMinorPx
+                    val targetHeight = if (landscape) naturalMinorPx else naturalMajorPx
+                    val factor = minOf(1f, 1280f / maxOf(targetWidth, targetHeight))
+                    val w = (targetWidth * factor).toInt().and(1.inv())
+                    val h = (targetHeight * factor).toInt().and(1.inv())
                     Thread { restartVideoPipeline(activeProjection, newServer, w, h) }.start()
                 }
                 override fun onLowMemory() {}
