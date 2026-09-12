@@ -131,6 +131,7 @@ class CaptureService : Service() {
             val captureConfig = AudioPlaybackCaptureConfiguration.Builder(activeProjection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
                 .build()
             val audioFormat = AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)

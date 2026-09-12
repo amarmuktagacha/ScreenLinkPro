@@ -15,6 +15,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
     var onError: ((String) -> Unit)? = null
     var onControl: ((ByteArray) -> Unit)? = null
     private val queue = LinkedBlockingQueue<StreamFrame>(45)
+    private val audioQueue = LinkedBlockingQueue<StreamFrame>(80)
     @Volatile private var latestConfig: StreamFrame? = null
     @Volatile private var latestKeyFrame: StreamFrame? = null
     @Volatile private var running = false
@@ -62,7 +63,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
                 try {
                     val out = DataOutputStream(socket.getOutputStream())
                     while (running && client === socket) {
-                        val frame = queue.take()
+                        val frame = audioQueue.poll() ?: queue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
                         out.writeInt(frame.kind); out.writeInt(frame.flags); out.writeInt(frame.bytes.size); out.write(frame.bytes); out.flush()
                     }
                 } catch (_: Exception) {
@@ -83,8 +84,8 @@ class ScreenServer(private val port: Int, private val code: String, private val 
     fun sendAudio(pcm: ByteArray) {
         if (!running || pcm.isEmpty()) return
         val item = StreamFrame(pcm, 0, 1)
-        if (queue.remainingCapacity() == 0) queue.poll()
-        queue.offer(item)
+        if (audioQueue.remainingCapacity() == 0) audioQueue.poll()
+        audioQueue.offer(item)
     }
 
     fun updateVideoSize(newWidth: Int, newHeight: Int) {
@@ -95,5 +96,5 @@ class ScreenServer(private val port: Int, private val code: String, private val 
         queue.offer(item)
     }
 
-    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); controlThread?.interrupt(); queue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
+    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); controlThread?.interrupt(); queue.clear(); audioQueue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
 }

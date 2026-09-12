@@ -210,7 +210,7 @@ private fun ViewerScreen(onBack: () -> Unit) {
     val wifi = remember { WifiConnector(context) }
     val view = LocalView.current
     LaunchedEffect(connected) {
-        if (connected) audioPlayer.start() else audioPlayer.stop()
+        if (connected) try { audioPlayer.start() } catch (_: Exception) { } else audioPlayer.stop()
         val activity = context as? Activity
         if (activity != null) {
             val controller = WindowInsetsControllerCompat(activity.window, view)
