@@ -2,6 +2,7 @@ package com.screenlink.pro
 
 import android.app.Activity
 import android.content.Intent
+import android.provider.Settings
 import android.Manifest
 import android.media.MediaCodec
 import android.media.projection.MediaProjectionManager
@@ -9,6 +10,7 @@ import android.os.Bundle
 import android.os.Build
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.MotionEvent
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
@@ -49,6 +51,7 @@ import com.screenlink.pro.capture.CaptureService
 import com.screenlink.pro.capture.EncodedFrame
 import com.screenlink.pro.capture.H264Decoder
 import com.screenlink.pro.capture.PlaybackAudioPlayer
+import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -62,6 +65,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestAppPermissions()
+        if (!RemoteControlAccessibilityService.isEnabled()) {
+            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Exception) { }
+        }
         setContent { ScreenLinkTheme { ScreenLinkApp() } }
     }
 
@@ -243,7 +249,23 @@ private fun ViewerScreen(onBack: () -> Unit) {
     BackHandler(enabled = connected) { decoder?.stop(); audioPlayer.stop(); client.close(); wifi.disconnect(); connected = false }
     if (connected) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply { holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } }) } })
+            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c -> SurfaceView(c).apply {
+                var downX = 0f; var downY = 0f; var downAt = 0L
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { downX = event.x; downY = event.y; downAt = System.currentTimeMillis(); true }
+                        MotionEvent.ACTION_UP -> {
+                            val width = view.width.coerceAtLeast(1); val height = view.height.coerceAtLeast(1)
+                            val x = (downX / width).coerceIn(0f, 1f); val y = (downY / height).coerceIn(0f, 1f)
+                            val endX = (event.x / width).coerceIn(0f, 1f); val endY = (event.y / height).coerceIn(0f, 1f)
+                            val moved = kotlin.math.hypot(event.x - downX, event.y - downY) > 18f
+                            client.sendTouch(if (moved) 1 else 0, x, y, endX, endY, System.currentTimeMillis() - downAt); true
+                        }
+                        else -> true
+                    }
+                }
+                holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } })
+            } })
         }
     } else AppScaffold("View a screen", onBack, scrollable = false) {
             Text("Scan the host QR code for instant pairing, or enter details manually.", color = Color(0xFF64748B))

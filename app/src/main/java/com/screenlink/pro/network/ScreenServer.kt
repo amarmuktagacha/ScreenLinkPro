@@ -13,6 +13,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
     var onConnected: (() -> Unit)? = null
     var onDisconnected: (() -> Unit)? = null
     var onError: ((String) -> Unit)? = null
+    var onControl: ((ByteArray) -> Unit)? = null
     private val queue = LinkedBlockingQueue<StreamFrame>(45)
     @Volatile private var latestConfig: StreamFrame? = null
     @Volatile private var latestKeyFrame: StreamFrame? = null
@@ -21,6 +22,7 @@ class ScreenServer(private val port: Int, private val code: String, private val 
     private var server: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var writerThread: Thread? = null
+    private var controlThread: Thread? = null
 
     fun start() {
         running = true
@@ -45,6 +47,17 @@ class ScreenServer(private val port: Int, private val code: String, private val 
             socket.soTimeout = 0
             client?.close(); client = socket; queue.clear(); latestConfig?.let { queue.offer(it) }; latestKeyFrame?.let { queue.offer(it) }; onConnected?.invoke()
             writerThread?.interrupt()
+            controlThread?.interrupt()
+            controlThread = Thread {
+                try {
+                    while (running && client === socket) {
+                        val kind = input.readInt()
+                        val length = input.readInt()
+                        if (kind != 2 || length !in 1..128) break
+                        onControl?.invoke(ByteArray(length).also { input.readFully(it) })
+                    }
+                } catch (_: Exception) { }
+            }.also { it.start() }
             writerThread = Thread {
                 try {
                     val out = DataOutputStream(socket.getOutputStream())
@@ -74,5 +87,5 @@ class ScreenServer(private val port: Int, private val code: String, private val 
         queue.offer(item)
     }
 
-    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); queue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
+    fun stop() { running = false; try { server?.close() } catch (_: Exception) {}; try { client?.close() } catch (_: Exception) {}; acceptThread?.interrupt(); writerThread?.interrupt(); controlThread?.interrupt(); queue.clear(); latestConfig = null; latestKeyFrame = null; client = null }
 }

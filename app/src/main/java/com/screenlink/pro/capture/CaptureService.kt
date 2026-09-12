@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.view.Surface
 import androidx.core.app.NotificationCompat
 import com.screenlink.pro.R
+import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenServer
 import com.screenlink.pro.util.Pairing
 
@@ -84,6 +85,7 @@ class CaptureService : Service() {
             ) ?: error("Virtual display unavailable")
 
             val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), setup.width, setup.height)
+            newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
             newServer.start(); server = newServer
             running = true
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
