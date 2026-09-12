@@ -265,7 +265,12 @@ private fun ViewerScreen(onBack: () -> Unit) {
                         else -> true
                     }
                 }
-                holder.addCallback(object : SurfaceHolder.Callback { override fun surfaceCreated(h: SurfaceHolder) { try { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } catch (_: Exception) {} }; override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) {}; override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null } })
+                holder.addCallback(object : SurfaceHolder.Callback {
+                    fun startDecoder(h: SurfaceHolder) { try { if (decoder == null && h.surface.isValid) { decoder = H264Decoder(h.surface, size.first, size.second).also { it.start() }; latestConfig.get()?.let { decoder?.feed(it.bytes, it.flags) }; latestKeyFrame.get()?.let { decoder?.feed(it.bytes, it.flags) }; while (true) { val frame = pendingFrames.poll() ?: break; decoder?.feed(frame.bytes, frame.flags) } } } catch (_: Exception) {} }
+                    override fun surfaceCreated(h: SurfaceHolder) { startDecoder(h) }
+                    override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, h2: Int) { startDecoder(h) }
+                    override fun surfaceDestroyed(h: SurfaceHolder) { decoder?.stop(); decoder = null }
+                })
             } })
         }
     } else AppScaffold("View a screen", onBack, scrollable = false) {

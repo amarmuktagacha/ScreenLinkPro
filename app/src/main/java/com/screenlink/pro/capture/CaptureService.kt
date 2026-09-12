@@ -36,6 +36,7 @@ class CaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
     private var configurationCallback: ComponentCallbacks? = null
+    private val pipelineLock = Any()
     @Volatile private var running = false
     @Volatile private var stopping = false
 
@@ -97,7 +98,9 @@ class CaptureService : Service() {
                     val dm = android.util.DisplayMetrics()
                     @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
                     val factor = minOf(1f, 1280f / maxOf(dm.widthPixels, dm.heightPixels))
-                    newServer.updateVideoSize((dm.widthPixels * factor).toInt().and(1.inv()), (dm.heightPixels * factor).toInt().and(1.inv()))
+                    val w = (dm.widthPixels * factor).toInt().and(1.inv())
+                    val h = (dm.heightPixels * factor).toInt().and(1.inv())
+                    Thread { restartVideoPipeline(activeProjection, newServer, w, h) }.start()
                 }
                 override fun onLowMemory() {}
             }.also { registerComponentCallbacks(it) }
@@ -201,6 +204,35 @@ class CaptureService : Service() {
             }
         }
         error("No compatible surface H.264 encoder found")
+    }
+
+    private fun restartVideoPipeline(activeProjection: MediaProjection, output: ScreenServer, width: Int, height: Int) {
+        synchronized(pipelineLock) {
+            if (!running || stopping) return
+            try {
+                val oldThread = encoderThread
+                encoderThread = null
+                oldThread?.interrupt()
+                if (Thread.currentThread() !== oldThread) try { oldThread?.join(400) } catch (_: Exception) {}
+                try { display?.release() } catch (_: Exception) {}
+                try { codec?.stop() } catch (_: Exception) {}
+                try { codec?.release() } catch (_: Exception) {}
+                try { inputSurface?.release() } catch (_: Exception) {}
+                display = null; codec = null; inputSurface = null
+                val setup = createEncoderWithFallback(width, height)
+                codec = setup.codec; inputSurface = setup.surface
+                display = activeProjection.createVirtualDisplay(
+                    "ScreenLink", setup.width, setup.height, resources.displayMetrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
+                ) ?: error("Virtual display unavailable after rotation")
+                output.updateVideoSize(setup.width, setup.height)
+                encoderThread = Thread({ drainEncoder(setup.codec, output) }, "ScreenLinkEncoder").also { it.start() }
+                Log.i(TAG, "Video pipeline restarted after rotation at ${setup.width}x${setup.height}")
+            } catch (error: Throwable) {
+                Log.e(TAG, "Video rotation restart failed", error)
+                stopAll(); stopSelf()
+            }
+        }
     }
 
     private fun startForegroundSafely() {
