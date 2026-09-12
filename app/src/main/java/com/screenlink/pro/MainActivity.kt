@@ -142,7 +142,7 @@ private fun HostScreen(onBack: () -> Unit) {
     val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val service = Intent(context, CaptureService::class.java).apply { action = CaptureService.START; putExtra(CaptureService.RESULT, result.resultCode); putExtra(CaptureService.DATA, result.data); putExtra(CaptureService.CODE, code) }
-            try { ContextCompat.startForegroundService(context, service); sharing = true; error = null } catch (e: Exception) { error = "Could not start sharing. Please try again." }
+            try { ContextCompat.startForegroundService(context, service); sharing = true; error = null } catch (e: Exception) { sharing = false; error = "Could not start sharing on this phone. Please allow screen capture and try again." }
         }
     }
     val qrBitmap = remember(ip, code, wifiName, wifiPassword) { ip?.let { QrPairing.createBitmap(QrPairing.payload(it, 47821, code, wifiName.trim(), wifiPassword), 560) } }

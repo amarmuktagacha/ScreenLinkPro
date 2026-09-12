@@ -47,6 +47,7 @@ class CaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) { stopSelfResult(startId); return START_NOT_STICKY }
         when (intent?.action) {
             STOP -> { stopAll(); stopSelfResult(startId) }
             START -> startCapture(intent)
@@ -206,8 +207,16 @@ class CaptureService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_share)
             .setContentTitle(getString(R.string.capture_title)).setContentText(getString(R.string.capture_text))
             .setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build()
-        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        else startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            } catch (first: Exception) {
+                // A few OEM Android 11 builds reject the typed overload even when
+                // the manifest is correct; the legacy overload is a safe fallback.
+                Log.w(TAG, "Typed foreground promotion rejected; retrying legacy mode", first)
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } else startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun drainEncoder(encoder: MediaCodec, output: ScreenServer) {
