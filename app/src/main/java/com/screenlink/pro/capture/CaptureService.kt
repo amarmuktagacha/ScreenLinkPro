@@ -72,15 +72,19 @@ class CaptureService : Service() {
             else @Suppress("DEPRECATION") intent.getParcelableExtra(DATA)
             require(result == Activity.RESULT_OK && data != null) { "Screen permission was not granted" }
 
-            // API 34 requires the approved token before promoting this service with the projection type.
-            if (Build.VERSION.SDK_INT < 34) startForegroundSafely()
+            // The service MUST already be promoted to foreground with the mediaProjection
+            // type before requesting the token. Doing this the other way around throws a
+            // SecurityException on Android 14+ and — because the service was started via
+            // startForegroundService() but never reached startForeground() in time — the
+            // whole app process gets killed by the system with "did not then call
+            // Service.startForeground()", which is what showed up as "keeps stopping".
+            startForegroundSafely()
             val manager = getSystemService(MediaProjectionManager::class.java) ?: error("MediaProjection unavailable")
             val activeProjection = manager.getMediaProjection(result, data!!) ?: error("MediaProjection unavailable")
             projection = activeProjection
             activeProjection.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { Log.i(TAG, "Projection stopped by system"); stopAll(); stopSelf() }
             }, Handler(Looper.getMainLooper()))
-            if (Build.VERSION.SDK_INT >= 34) startForegroundSafely()
 
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
