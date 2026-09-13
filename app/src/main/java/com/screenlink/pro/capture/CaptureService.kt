@@ -24,6 +24,12 @@ class CaptureService : Service() {
     companion object {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
         private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7; private const val PORT = 47821
+        // Video players commonly fire several configuration-change signals within a few
+        // hundred milliseconds of entering fullscreen (orientation, then immersive/insets,
+        // sometimes twice). Tearing the encoder + VirtualDisplay down and rebuilding it for
+        // every single one of those, back to back, is what was crashing the native media
+        // driver on weak chipsets. Debouncing coalesces a burst into one restart.
+        private const val RESIZE_DEBOUNCE_MS = 400L
     }
     private data class EncoderSetup(val codec: MediaCodec, val surface: Surface, val width: Int, val height: Int)
 
@@ -44,7 +50,11 @@ class CaptureService : Service() {
     // at its original size after rotating).
     private var naturalMajorPx = 0
     private var naturalMinorPx = 0
+    private var currentEncodedWidth = 0
+    private var currentEncodedHeight = 0
     private val pipelineLock = Any()
+    private val resizeHandler = Handler(Looper.getMainLooper())
+    private var pendingResize: Runnable? = null
     @Volatile private var running = false
     @Volatile private var stopping = false
 
@@ -102,6 +112,7 @@ class CaptureService : Service() {
                 "ScreenLink", setup.width, setup.height, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
             ) ?: error("Virtual display unavailable")
+            currentEncodedWidth = setup.width; currentEncodedHeight = setup.height
 
             val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), setup.width, setup.height)
             newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
@@ -116,7 +127,14 @@ class CaptureService : Service() {
                     val factor = minOf(1f, 1280f / maxOf(targetWidth, targetHeight))
                     val w = (targetWidth * factor).toInt().and(1.inv())
                     val h = (targetHeight * factor).toInt().and(1.inv())
-                    Thread { restartVideoPipeline(activeProjection, newServer, w, h) }.start()
+                    // Ignore config changes that don't actually call for a different encoded
+                    // size (font scale, keyboard visibility, etc.) — no need to touch the
+                    // pipeline at all for those.
+                    if (w == currentEncodedWidth && h == currentEncodedHeight) return
+                    pendingResize?.let { resizeHandler.removeCallbacks(it) }
+                    val task = Runnable { Thread({ restartVideoPipeline(activeProjection, newServer, w, h) }, "ScreenLinkResize").start() }
+                    pendingResize = task
+                    resizeHandler.postDelayed(task, RESIZE_DEBOUNCE_MS)
                 }
                 override fun onLowMemory() {}
             }.also { registerComponentCallbacks(it) }
@@ -223,30 +241,57 @@ class CaptureService : Service() {
         error("No compatible surface H.264 encoder found")
     }
 
+    /** Tears down only the video half of the pipeline (encoder + VirtualDisplay), leaving the server/audio/session alive. */
+    private fun tearDownVideoOnly() {
+        val oldThread = encoderThread
+        encoderThread = null
+        oldThread?.interrupt()
+        if (Thread.currentThread() !== oldThread) try { oldThread?.join(400) } catch (_: Exception) {}
+        try { display?.release() } catch (_: Exception) {}
+        try { codec?.stop() } catch (_: Exception) {}
+        try { codec?.release() } catch (_: Exception) {}
+        try { inputSurface?.release() } catch (_: Exception) {}
+        display = null; codec = null; inputSurface = null
+    }
+
+    private fun attachVideoPipeline(activeProjection: MediaProjection, output: ScreenServer, setup: EncoderSetup) {
+        codec = setup.codec; inputSurface = setup.surface
+        display = activeProjection.createVirtualDisplay(
+            "ScreenLink", setup.width, setup.height, resources.displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
+        ) ?: error("Virtual display unavailable")
+        currentEncodedWidth = setup.width; currentEncodedHeight = setup.height
+        output.updateVideoSize(setup.width, setup.height)
+        encoderThread = Thread({ drainEncoder(setup.codec, output) }, "ScreenLinkEncoder").also { it.start() }
+    }
+
     private fun restartVideoPipeline(activeProjection: MediaProjection, output: ScreenServer, width: Int, height: Int) {
         synchronized(pipelineLock) {
             if (!running || stopping) return
+            if (width == currentEncodedWidth && height == currentEncodedHeight) return
+            val previousWidth = currentEncodedWidth
+            val previousHeight = currentEncodedHeight
             try {
-                val oldThread = encoderThread
-                encoderThread = null
-                oldThread?.interrupt()
-                if (Thread.currentThread() !== oldThread) try { oldThread?.join(400) } catch (_: Exception) {}
-                try { display?.release() } catch (_: Exception) {}
-                try { codec?.stop() } catch (_: Exception) {}
-                try { codec?.release() } catch (_: Exception) {}
-                try { inputSurface?.release() } catch (_: Exception) {}
-                display = null; codec = null; inputSurface = null
+                tearDownVideoOnly()
                 val setup = createEncoderWithFallback(width, height)
-                codec = setup.codec; inputSurface = setup.surface
-                display = activeProjection.createVirtualDisplay(
-                    "ScreenLink", setup.width, setup.height, resources.displayMetrics.densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
-                ) ?: error("Virtual display unavailable after rotation")
-                output.updateVideoSize(setup.width, setup.height)
-                encoderThread = Thread({ drainEncoder(setup.codec, output) }, "ScreenLinkEncoder").also { it.start() }
-                Log.i(TAG, "Video pipeline restarted after rotation at ${setup.width}x${setup.height}")
+                attachVideoPipeline(activeProjection, output, setup)
+                Log.i(TAG, "Video pipeline restarted at ${setup.width}x${setup.height}")
             } catch (error: Throwable) {
-                Log.e(TAG, "Video rotation restart failed", error)
+                Log.e(TAG, "Resize to ${width}x$height failed, trying to recover at previous ${previousWidth}x$previousHeight", error)
+                // Never leave the session half-torn-down over a resize failure — that's what
+                // was killing the whole share (and the socket with it) when a video app's
+                // fullscreen transition confused the pipeline. Try to recover at the last
+                // known-good size before giving up entirely.
+                if (previousWidth > 1 && previousHeight > 1) {
+                    try {
+                        val fallback = createEncoderWithFallback(previousWidth, previousHeight)
+                        attachVideoPipeline(activeProjection, output, fallback)
+                        Log.w(TAG, "Recovered at previous size ${fallback.width}x${fallback.height}")
+                        return
+                    } catch (fallbackError: Throwable) {
+                        Log.e(TAG, "Recovery at previous size also failed", fallbackError)
+                    }
+                }
                 stopAll(); stopSelf()
             }
         }
@@ -286,6 +331,8 @@ class CaptureService : Service() {
     private fun stopAll() {
         if (stopping) return
         stopping = true; running = false
+        pendingResize?.let { resizeHandler.removeCallbacks(it) }
+        pendingResize = null
         val thread = encoderThread
         if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
@@ -302,6 +349,7 @@ class CaptureService : Service() {
         try { server?.stop() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
         display = null; codec = null; inputSurface = null; server = null; projection = null
+        currentEncodedWidth = 0; currentEncodedHeight = 0
         if (Build.VERSION.SDK_INT >= 24) try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopping = false
     }
