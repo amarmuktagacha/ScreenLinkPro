@@ -12,6 +12,7 @@ import android.util.Log
 import android.view.WindowManager
 import android.view.Surface
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.screenlink.pro.R
 import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenServer
@@ -27,11 +28,20 @@ import com.screenlink.pro.util.Pairing
  * fixed size for the life of the session is far more important than getting the aspect ratio
  * right on every rotation, so a rotated video will appear smaller/rotated within the frame on
  * the viewer rather than filling the screen — a cosmetic limitation, not a bug.
+ *
+ * On at least one tested device (Tecno KL4 / Unisoc, HiOS), the OS itself invokes
+ * MediaProjection.Callback.onStop() as soon as the screen rotates at all — even with zero app
+ * code touching the encoder or VirtualDisplay — ending the whole session outright. That is a
+ * platform/OEM behavior outside this app's control (Google's own AOSP has had rotation-related
+ * MediaProjection mirroring bugs before). Nothing server-side can keep the session alive through
+ * that; the practical workaround is to lock screen rotation on the sharing phone while in use.
+ * What we CAN do is make the interruption recoverable in one tap instead of a silent drop.
  */
 class CaptureService : Service() {
     companion object {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
-        private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7; private const val PORT = 47821
+        private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7
+        private const val INTERRUPTED_NOTIFICATION_ID = 8; private const val PORT = 47821
     }
     private data class EncoderSetup(val codec: MediaCodec, val surface: Surface, val width: Int, val height: Int)
 
@@ -81,7 +91,11 @@ class CaptureService : Service() {
             val activeProjection = manager.getMediaProjection(result, data!!) ?: error("MediaProjection unavailable")
             projection = activeProjection
             activeProjection.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { Log.i(TAG, "Projection stopped by system"); stopAll(); stopSelf() }
+                override fun onStop() {
+                    Log.i(TAG, "Projection stopped by system")
+                    notifyShareInterrupted()
+                    stopAll(); stopSelf()
+                }
             }, Handler(Looper.getMainLooper()))
 
             val metrics = android.util.DisplayMetrics()
@@ -109,6 +123,25 @@ class CaptureService : Service() {
             Log.e(TAG, "Capture startup failed", error)
             stopAll(); stopSelf()
         }
+    }
+
+    /** Best-effort "tap to share again" notification for when the OS ends the session on its own. */
+    private fun notifyShareInterrupted() {
+        try {
+            val launchIntent = (packageManager.getLaunchIntentForPackage(packageName) ?: Intent()).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+            val pending = PendingIntent.getActivity(this, 0, launchIntent, pendingFlags)
+            val notification = NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_share)
+                .setContentTitle("Screen sharing stopped")
+                .setContentText("The system ended the share — this can happen when the screen rotates on some phones. Tap to share again.")
+                .setAutoCancel(true)
+                .setContentIntent(pending)
+                .build()
+            NotificationManagerCompat.from(this).notify(INTERRUPTED_NOTIFICATION_ID, notification)
+        } catch (error: Exception) { Log.w(TAG, "Could not show interrupted notification", error) }
     }
 
     /**
