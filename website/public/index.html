@@ -1,1 +1,331 @@
-PLACEHOLDER
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ScreenLink Pro — Device Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#12151b;
+    --surface:#1b212b;
+    --surface-2:#222a35;
+    --border:#2b3340;
+    --text:#edeff3;
+    --text-muted:#8a93a3;
+    --live:#35d07f;
+    --live-glow:rgba(53,208,127,.35);
+    --action:#5b8cff;
+    --action-hover:#4877e6;
+    --danger:#e0616b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(circle at 15% 0%, #1a2130 0%, transparent 45%),
+      radial-gradient(circle at 90% 100%, #171c2a 0%, transparent 40%),
+      var(--bg);
+    min-height:100vh;
+    color:var(--text);
+    font-family:'Inter', system-ui, sans-serif;
+    display:flex;
+    justify-content:center;
+    padding:32px 20px 60px;
+  }
+  .wrap{width:100%; max-width:420px;}
+  .brand{
+    display:flex; align-items:center; gap:10px;
+    margin-bottom:34px;
+  }
+  .brand-mark{
+    width:34px; height:34px; border-radius:9px;
+    background:linear-gradient(135deg, var(--action), #8a6bff);
+    position:relative; flex:none;
+  }
+  .brand-mark::before, .brand-mark::after{
+    content:''; position:absolute; border-radius:2px; background:#fff; opacity:.92;
+  }
+  .brand-mark::before{ width:14px; height:9px; left:6px; top:9px; border:1.5px solid #fff; background:transparent; border-radius:2px;}
+  .brand-mark::after{ width:6px; height:6px; right:5px; bottom:6px; border-radius:50%; background:var(--live); box-shadow:0 0 6px var(--live-glow);}
+  .brand-text{ font-family:'Space Grotesk', sans-serif; font-weight:600; font-size:19px; letter-spacing:-.01em;}
+  .brand-text span{ color:var(--text-muted); font-weight:500; font-size:13px; display:block; margin-top:1px; font-family:'Inter',sans-serif;}
+
+  .card{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:28px 24px;
+  }
+
+  h1{ font-family:'Space Grotesk', sans-serif; font-size:22px; font-weight:600; margin:0 0 6px; letter-spacing:-.01em;}
+  p.lead{ color:var(--text-muted); font-size:14px; line-height:1.55; margin:0 0 24px;}
+
+  label{ display:block; font-size:13px; color:var(--text-muted); margin:0 0 6px;}
+  input{
+    width:100%; padding:11px 13px; margin-bottom:16px;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+    color:var(--text); font-size:15px; font-family:inherit;
+  }
+  input:focus{ outline:none; border-color:var(--action); }
+
+  button{
+    width:100%; padding:12px 14px; border-radius:10px; border:none;
+    font-family:'Inter', sans-serif; font-size:15px; font-weight:600; cursor:pointer;
+    transition:background .15s ease, opacity .15s ease;
+  }
+  button:focus-visible{ outline:2px solid var(--action); outline-offset:2px; }
+  .btn-primary{ background:var(--action); color:#fff; }
+  .btn-primary:hover{ background:var(--action-hover); }
+  .btn-primary:disabled{ background:#3a4150; color:var(--text-muted); cursor:not-allowed; }
+  .btn-ghost{ background:transparent; color:var(--text-muted); margin-top:10px; font-weight:500; font-size:14px; padding:6px; }
+  .btn-ghost:hover{ color:var(--text); }
+  .btn-danger-ghost{ background:transparent; color:var(--danger); margin-top:14px; font-weight:500; font-size:13px; padding:4px; }
+
+  .error{ background:rgba(224,97,107,.1); border:1px solid rgba(224,97,107,.35); color:#f0929a;
+    font-size:13px; padding:10px 12px; border-radius:9px; margin-bottom:16px; line-height:1.5; display:none; }
+
+  /* Dashboard */
+  .row-between{ display:flex; align-items:center; justify-content:space-between; margin-bottom:2px;}
+  .device-name{ font-family:'Space Grotesk', sans-serif; font-size:19px; font-weight:600; }
+  .device-name-input{ margin-bottom:8px; font-family:'Space Grotesk', sans-serif; font-size:17px; font-weight:600; padding:9px 11px;}
+  .device-sub{ color:var(--text-muted); font-size:13px; margin:0 0 22px; }
+
+  .status-panel{
+    border:1px solid var(--border); border-radius:13px; padding:18px 16px;
+    background:var(--surface-2); margin-bottom:20px;
+    display:flex; align-items:center; gap:13px;
+  }
+  .status-dot{ width:13px; height:13px; border-radius:50%; flex:none; background:#4b5566; }
+  .status-dot.live{ background:var(--live); box-shadow:0 0 0 0 var(--live-glow); animation:pulse 1.8s infinite; }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 var(--live-glow); }
+    70%{ box-shadow:0 0 0 9px rgba(53,208,127,0); }
+    100%{ box-shadow:0 0 0 0 rgba(53,208,127,0); }
+  }
+  .status-text{ font-size:15px; font-weight:600; }
+  .status-text .sub{ display:block; font-weight:400; font-size:12.5px; color:var(--text-muted); margin-top:2px; }
+  @media (prefers-reduced-motion: reduce){ .status-dot.live{ animation:none; } }
+
+  .empty{ text-align:left; color:var(--text-muted); font-size:13.5px; line-height:1.6; }
+  .empty b{ color:var(--text); font-weight:600; }
+
+  footer{ text-align:center; color:var(--text-muted); font-size:12px; margin-top:22px; }
+  .hidden{ display:none !important; }
+  .toggle-line{ text-align:center; font-size:13.5px; color:var(--text-muted); margin-top:16px; }
+  .toggle-line a{ color:var(--action); text-decoration:none; cursor:pointer; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-text">ScreenLink Pro<span>Device status</span></div>
+    </div>
+
+    <div class="card">
+
+      <!-- AUTH VIEW -->
+      <div id="auth-view">
+        <h1 id="auth-title">Log in</h1>
+        <p class="lead" id="auth-lead">Use the same email and password you'll sign in with on your phone.</p>
+        <div class="error" id="auth-error"></div>
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" placeholder="you@example.com" />
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
+        <button class="btn-primary" id="auth-submit">Log in</button>
+        <div class="toggle-line" id="auth-toggle">
+          New here? <a id="auth-toggle-link">Create an account</a>
+        </div>
+      </div>
+
+      <!-- DASHBOARD VIEW -->
+      <div id="dashboard-view" class="hidden">
+        <div id="profile-loaded">
+          <div class="row-between">
+            <div class="device-name" id="device-name-display">Your device</div>
+          </div>
+          <p class="device-sub" id="device-email-sub"></p>
+
+          <div class="status-panel">
+            <div class="status-dot" id="status-dot"></div>
+            <div class="status-text" id="status-text">
+              Checking status…
+              <span class="sub" id="status-sub">&nbsp;</span>
+            </div>
+          </div>
+
+          <button class="btn-primary" id="view-btn" disabled>View this screen</button>
+        </div>
+
+        <div id="profile-empty" class="empty hidden">
+          <b>No device linked yet.</b><br/>
+          Open ScreenLink Pro on your phone, log in with this same email, and it'll show up here automatically.
+        </div>
+
+        <button class="btn-danger-ghost" id="signout-btn">Sign out</button>
+      </div>
+
+    </div>
+    <footer>Signed in with Firebase · your data stays private to your account</footer>
+  </div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+    createUserWithEmailAndPassword, signOut
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import {
+    getFirestore, doc, onSnapshot, setDoc, serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyD5AQGP3Mc2j6qCaffZqr1irOEb7C5Dp24",
+    authDomain: "screenlink-pro.firebaseapp.com",
+    projectId: "screenlink-pro",
+    storageBucket: "screenlink-pro.firebasestorage.app",
+    messagingSenderId: "643199592935",
+    appId: "1:643199592935:web:4951531b5dda67342fb542"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // ---- Elements ----
+  const authView = document.getElementById('auth-view');
+  const dashView = document.getElementById('dashboard-view');
+  const authTitle = document.getElementById('auth-title');
+  const authLead = document.getElementById('auth-lead');
+  const authSubmit = document.getElementById('auth-submit');
+  const authToggleLink = document.getElementById('auth-toggle-link');
+  const authToggleLine = document.getElementById('auth-toggle');
+  const authError = document.getElementById('auth-error');
+  const emailInput = document.getElementById('email');
+  const passwordInput = document.getElementById('password');
+
+  const profileLoaded = document.getElementById('profile-loaded');
+  const profileEmpty = document.getElementById('profile-empty');
+  const deviceNameDisplay = document.getElementById('device-name-display');
+  const deviceEmailSub = document.getElementById('device-email-sub');
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const statusSub = document.getElementById('status-sub');
+  const viewBtn = document.getElementById('view-btn');
+  const signoutBtn = document.getElementById('signout-btn');
+
+  let mode = 'login'; // or 'signup'
+  let unsubProfile = null;
+
+  function toggleAuthMode() {
+    mode = mode === 'login' ? 'signup' : 'login';
+    if (mode === 'signup') {
+      authTitle.textContent = 'Create an account';
+      authLead.textContent = "You'll use this same email and password to log in on your phone.";
+      authSubmit.textContent = 'Create account';
+      authToggleLine.innerHTML = 'Already have an account? <a id="auth-toggle-link">Log in</a>';
+    } else {
+      authTitle.textContent = 'Log in';
+      authLead.textContent = "Use the same email and password you'll sign in with on your phone.";
+      authSubmit.textContent = 'Log in';
+      authToggleLine.innerHTML = 'New here? <a id="auth-toggle-link">Create an account</a>';
+    }
+    document.getElementById('auth-toggle-link').addEventListener('click', toggleAuthMode);
+    authError.style.display = 'none';
+  }
+  authToggleLink.addEventListener('click', toggleAuthMode);
+
+  authSubmit.addEventListener('click', async () => {
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    authError.style.display = 'none';
+    if (!email || password.length < 6) {
+      authError.textContent = 'Enter a valid email and a password of at least 6 characters.';
+      authError.style.display = 'block';
+      return;
+    }
+    authSubmit.disabled = true;
+    try {
+      if (mode === 'signup') {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      authError.textContent = friendlyAuthError(err.code);
+      authError.style.display = 'block';
+    } finally {
+      authSubmit.disabled = false;
+    }
+  });
+
+  function friendlyAuthError(code) {
+    switch (code) {
+      case 'auth/email-already-in-use': return 'That email already has an account — try logging in instead.';
+      case 'auth/invalid-email': return 'That email address looks invalid.';
+      case 'auth/wrong-password':
+      case 'auth/invalid-credential': return 'Wrong email or password.';
+      case 'auth/user-not-found': return 'No account with that email — try creating one.';
+      case 'auth/weak-password': return 'Password must be at least 6 characters.';
+      default: return 'Something went wrong. Please try again.';
+    }
+  }
+
+  signoutBtn.addEventListener('click', () => signOut(auth));
+
+  onAuthStateChanged(auth, (user) => {
+    if (unsubProfile) { unsubProfile(); unsubProfile = null; }
+    if (user) {
+      authView.classList.add('hidden');
+      dashView.classList.remove('hidden');
+      deviceEmailSub.textContent = user.email;
+      watchProfile(user);
+    } else {
+      dashView.classList.add('hidden');
+      authView.classList.remove('hidden');
+      emailInput.value = '';
+      passwordInput.value = '';
+    }
+  });
+
+  function watchProfile(user) {
+    const ref = doc(db, 'profiles', user.uid);
+    unsubProfile = onSnapshot(ref, (snap) => {
+      if (!snap.exists()) {
+        profileLoaded.classList.add('hidden');
+        profileEmpty.classList.remove('hidden');
+        return;
+      }
+      profileLoaded.classList.remove('hidden');
+      profileEmpty.classList.add('hidden');
+      const data = snap.data();
+      deviceNameDisplay.textContent = data.name || 'Your device';
+      const live = !!data.isLive;
+      statusDot.classList.toggle('live', live);
+      if (live) {
+        statusText.childNodes[0].nodeValue = 'Live now ';
+        statusSub.textContent = 'Someone can view this screen right now.';
+        viewBtn.disabled = false;
+        viewBtn.textContent = 'View this screen';
+      } else {
+        statusText.childNodes[0].nodeValue = 'Offline ';
+        statusSub.textContent = 'Sharing isn\'t turned on right now.';
+        viewBtn.disabled = true;
+        viewBtn.textContent = 'Not sharing right now';
+      }
+      viewBtn.onclick = () => {
+        window.location.href = `screenlinkpro://view?uid=${user.uid}`;
+      };
+    }, () => {
+      profileLoaded.classList.add('hidden');
+      profileEmpty.classList.remove('hidden');
+      profileEmpty.innerHTML = "<b>Couldn't load your device.</b><br/>Check your connection and reload this page.";
+    });
+  }
+</script>
+</body>
+</html>

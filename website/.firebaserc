@@ -1,1 +1,5 @@
-PLACEHOLDER
+{
+  "projects": {
+    "default": "screenlink-pro"
+  }
+}
