@@ -11,25 +11,27 @@ import android.os.*
 import android.util.Log
 import android.view.WindowManager
 import android.view.Surface
-import android.content.ComponentCallbacks
-import android.content.res.Configuration
 import androidx.core.app.NotificationCompat
 import com.screenlink.pro.R
 import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenServer
 import com.screenlink.pro.util.Pairing
 
-/** Owns exactly one MediaProjection session and one VirtualDisplay per service lifetime. */
+/**
+ * Owns exactly one MediaProjection session and one VirtualDisplay per service lifetime.
+ *
+ * NOTE ON ROTATION: this deliberately does NOT tear down and rebuild the encoder/VirtualDisplay
+ * when the source phone rotates. An earlier version tried to (to make landscape video fill the
+ * viewer screen), but recreating MediaCodec + VirtualDisplay mid-session proved unreliable on
+ * some budget chipsets and caused the whole share to crash/disconnect. Capturing at a single
+ * fixed size for the life of the session is far more important than getting the aspect ratio
+ * right on every rotation, so a rotated video will appear smaller/rotated within the frame on
+ * the viewer rather than filling the screen — a cosmetic limitation, not a bug.
+ */
 class CaptureService : Service() {
     companion object {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
         private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7; private const val PORT = 47821
-        // Video players commonly fire several configuration-change signals within a few
-        // hundred milliseconds of entering fullscreen (orientation, then immersive/insets,
-        // sometimes twice). Tearing the encoder + VirtualDisplay down and rebuilding it for
-        // every single one of those, back to back, is what was crashing the native media
-        // driver on weak chipsets. Debouncing coalesces a burst into one restart.
-        private const val RESIZE_DEBOUNCE_MS = 400L
     }
     private data class EncoderSetup(val codec: MediaCodec, val surface: Surface, val width: Int, val height: Int)
 
@@ -41,20 +43,6 @@ class CaptureService : Service() {
     private var encoderThread: Thread? = null
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
-    private var configurationCallback: ComponentCallbacks? = null
-    // The two physical panel dimensions captured once when sharing starts. Rotation never
-    // changes the panel's actual major/minor size — it only swaps which one is "width" and
-    // which is "height" — so we reuse this pair on every rotation instead of re-querying
-    // WindowManager (a Service-context WindowManager can report stale/incorrect metrics that
-    // don't reflect the display's current rotation, which was causing the video to stay stuck
-    // at its original size after rotating).
-    private var naturalMajorPx = 0
-    private var naturalMinorPx = 0
-    private var currentEncodedWidth = 0
-    private var currentEncodedHeight = 0
-    private val pipelineLock = Any()
-    private val resizeHandler = Handler(Looper.getMainLooper())
-    private var pendingResize: Runnable? = null
     @Volatile private var running = false
     @Volatile private var stopping = false
 
@@ -87,7 +75,7 @@ class CaptureService : Service() {
             // SecurityException on Android 14+ and — because the service was started via
             // startForegroundService() but never reached startForeground() in time — the
             // whole app process gets killed by the system with "did not then call
-            // Service.startForeground()", which is what showed up as "keeps stopping".
+            // Service.startForeground()".
             startForegroundSafely()
             val manager = getSystemService(MediaProjectionManager::class.java) ?: error("MediaProjection unavailable")
             val activeProjection = manager.getMediaProjection(result, data!!) ?: error("MediaProjection unavailable")
@@ -100,8 +88,6 @@ class CaptureService : Service() {
             @Suppress("DEPRECATION") (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
             val screenWidth = metrics.widthPixels; val screenHeight = metrics.heightPixels
             require(screenWidth > 1 && screenHeight > 1) { "Invalid display size" }
-            naturalMajorPx = maxOf(screenWidth, screenHeight)
-            naturalMinorPx = minOf(screenWidth, screenHeight)
             val scale = minOf(1f, 1280f / maxOf(screenWidth, screenHeight))
             val requestedWidth = (screenWidth * scale).toInt().and(1.inv())
             val requestedHeight = (screenHeight * scale).toInt().and(1.inv())
@@ -112,32 +98,11 @@ class CaptureService : Service() {
                 "ScreenLink", setup.width, setup.height, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
             ) ?: error("Virtual display unavailable")
-            currentEncodedWidth = setup.width; currentEncodedHeight = setup.height
 
             val newServer = ScreenServer(PORT, intent.getStringExtra(CODE) ?: Pairing.generate(), setup.width, setup.height)
             newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
             newServer.start(); server = newServer
             running = true
-            configurationCallback = object : ComponentCallbacks {
-                override fun onConfigurationChanged(newConfig: Configuration) {
-                    if (naturalMajorPx <= 1 || naturalMinorPx <= 1) return
-                    val landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
-                    val targetWidth = if (landscape) naturalMajorPx else naturalMinorPx
-                    val targetHeight = if (landscape) naturalMinorPx else naturalMajorPx
-                    val factor = minOf(1f, 1280f / maxOf(targetWidth, targetHeight))
-                    val w = (targetWidth * factor).toInt().and(1.inv())
-                    val h = (targetHeight * factor).toInt().and(1.inv())
-                    // Ignore config changes that don't actually call for a different encoded
-                    // size (font scale, keyboard visibility, etc.) — no need to touch the
-                    // pipeline at all for those.
-                    if (w == currentEncodedWidth && h == currentEncodedHeight) return
-                    pendingResize?.let { resizeHandler.removeCallbacks(it) }
-                    val task = Runnable { Thread({ restartVideoPipeline(activeProjection, newServer, w, h) }, "ScreenLinkResize").start() }
-                    pendingResize = task
-                    resizeHandler.postDelayed(task, RESIZE_DEBOUNCE_MS)
-                }
-                override fun onLowMemory() {}
-            }.also { registerComponentCallbacks(it) }
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
             startPlaybackAudio(activeProjection, newServer)
         } catch (error: Throwable) {
@@ -241,62 +206,6 @@ class CaptureService : Service() {
         error("No compatible surface H.264 encoder found")
     }
 
-    /** Tears down only the video half of the pipeline (encoder + VirtualDisplay), leaving the server/audio/session alive. */
-    private fun tearDownVideoOnly() {
-        val oldThread = encoderThread
-        encoderThread = null
-        oldThread?.interrupt()
-        if (Thread.currentThread() !== oldThread) try { oldThread?.join(400) } catch (_: Exception) {}
-        try { display?.release() } catch (_: Exception) {}
-        try { codec?.stop() } catch (_: Exception) {}
-        try { codec?.release() } catch (_: Exception) {}
-        try { inputSurface?.release() } catch (_: Exception) {}
-        display = null; codec = null; inputSurface = null
-    }
-
-    private fun attachVideoPipeline(activeProjection: MediaProjection, output: ScreenServer, setup: EncoderSetup) {
-        codec = setup.codec; inputSurface = setup.surface
-        display = activeProjection.createVirtualDisplay(
-            "ScreenLink", setup.width, setup.height, resources.displayMetrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, setup.surface, null, null
-        ) ?: error("Virtual display unavailable")
-        currentEncodedWidth = setup.width; currentEncodedHeight = setup.height
-        output.updateVideoSize(setup.width, setup.height)
-        encoderThread = Thread({ drainEncoder(setup.codec, output) }, "ScreenLinkEncoder").also { it.start() }
-    }
-
-    private fun restartVideoPipeline(activeProjection: MediaProjection, output: ScreenServer, width: Int, height: Int) {
-        synchronized(pipelineLock) {
-            if (!running || stopping) return
-            if (width == currentEncodedWidth && height == currentEncodedHeight) return
-            val previousWidth = currentEncodedWidth
-            val previousHeight = currentEncodedHeight
-            try {
-                tearDownVideoOnly()
-                val setup = createEncoderWithFallback(width, height)
-                attachVideoPipeline(activeProjection, output, setup)
-                Log.i(TAG, "Video pipeline restarted at ${setup.width}x${setup.height}")
-            } catch (error: Throwable) {
-                Log.e(TAG, "Resize to ${width}x$height failed, trying to recover at previous ${previousWidth}x$previousHeight", error)
-                // Never leave the session half-torn-down over a resize failure — that's what
-                // was killing the whole share (and the socket with it) when a video app's
-                // fullscreen transition confused the pipeline. Try to recover at the last
-                // known-good size before giving up entirely.
-                if (previousWidth > 1 && previousHeight > 1) {
-                    try {
-                        val fallback = createEncoderWithFallback(previousWidth, previousHeight)
-                        attachVideoPipeline(activeProjection, output, fallback)
-                        Log.w(TAG, "Recovered at previous size ${fallback.width}x${fallback.height}")
-                        return
-                    } catch (fallbackError: Throwable) {
-                        Log.e(TAG, "Recovery at previous size also failed", fallbackError)
-                    }
-                }
-                stopAll(); stopSelf()
-            }
-        }
-    }
-
     private fun startForegroundSafely() {
         val notification = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_share)
             .setContentTitle(getString(R.string.capture_title)).setContentText(getString(R.string.capture_text))
@@ -331,8 +240,6 @@ class CaptureService : Service() {
     private fun stopAll() {
         if (stopping) return
         stopping = true; running = false
-        pendingResize?.let { resizeHandler.removeCallbacks(it) }
-        pendingResize = null
         val thread = encoderThread
         if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
@@ -340,8 +247,6 @@ class CaptureService : Service() {
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
-        configurationCallback?.let { try { unregisterComponentCallbacks(it) } catch (_: Exception) {} }
-        configurationCallback = null
         try { display?.release() } catch (_: Exception) {}
         try { codec?.stop() } catch (_: Exception) {}
         try { codec?.release() } catch (_: Exception) {}
@@ -349,7 +254,6 @@ class CaptureService : Service() {
         try { server?.stop() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
         display = null; codec = null; inputSurface = null; server = null; projection = null
-        currentEncodedWidth = 0; currentEncodedHeight = 0
         if (Build.VERSION.SDK_INT >= 24) try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopping = false
     }
