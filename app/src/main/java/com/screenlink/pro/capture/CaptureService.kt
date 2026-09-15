@@ -37,10 +37,16 @@ import com.screenlink.pro.util.Pairing
  * MediaProjection mirroring bugs before). Nothing server-side can keep the session alive through
  * that; the practical workaround is to lock screen rotation on the sharing phone while in use.
  * What we CAN do is make the interruption recoverable in one tap instead of a silent drop.
+ *
+ * NOTE ON ONLINE MODE: local Wi-Fi sharing and the internet/website "Live" status are
+ * intentionally independent. Starting a LOCAL share never touches Firestore. Only a share
+ * started with the ONLINE extra set to true marks the account live on the website, and it does
+ * so regardless of whether a local IP address is available (mobile data is fine).
  */
 class CaptureService : Service() {
     companion object {
         const val START = "start"; const val STOP = "stop"; const val CODE = "code"; const val DATA = "data"; const val RESULT = "result"
+        const val ONLINE = "online"
         private const val TAG = "ScreenLinkCapture"; private const val CHANNEL = "screenlink"; private const val NOTIFICATION_ID = 7
         private const val INTERRUPTED_NOTIFICATION_ID = 8; private const val PORT = 47821
     }
@@ -56,6 +62,7 @@ class CaptureService : Service() {
     private var audioThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var stopping = false
+    @Volatile private var onlineMode = false
 
     override fun onCreate() {
         super.onCreate()
@@ -80,6 +87,7 @@ class CaptureService : Service() {
             val data: Intent? = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(DATA, Intent::class.java)
             else @Suppress("DEPRECATION") intent.getParcelableExtra(DATA)
             require(result == Activity.RESULT_OK && data != null) { "Screen permission was not granted" }
+            onlineMode = intent.getBooleanExtra(ONLINE, false)
 
             // The service MUST already be promoted to foreground with the mediaProjection
             // type before requesting the token. Doing this the other way around throws a
@@ -118,9 +126,9 @@ class CaptureService : Service() {
             newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
             newServer.start(); server = newServer
             running = true
-            // Optional: reflect "live" on the companion website if this device is logged in.
-            // No-ops silently when not logged in — local sharing needs no account.
-            CloudSync.setLive(true)
+            // Only an ONLINE-mode share reflects "live" on the companion website — a plain
+            // local share never touches Firestore, even if the user happens to be logged in.
+            if (onlineMode) CloudSync.setLive(true)
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
             startPlaybackAudio(activeProjection, newServer)
         } catch (error: Throwable) {
@@ -277,7 +285,7 @@ class CaptureService : Service() {
     private fun stopAll() {
         if (stopping) return
         stopping = true; running = false
-        CloudSync.setLive(false)
+        if (onlineMode) CloudSync.setLive(false)
         val thread = encoderThread
         if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
@@ -292,6 +300,7 @@ class CaptureService : Service() {
         try { server?.stop() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
         display = null; codec = null; inputSurface = null; server = null; projection = null
+        onlineMode = false
         if (Build.VERSION.SDK_INT >= 24) try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopping = false
     }
