@@ -23,6 +23,7 @@ object CloudSync {
 
     fun isLoggedIn(): Boolean = auth.currentUser != null
     fun currentEmail(): String? = auth.currentUser?.email
+    fun currentUid(): String? = auth.currentUser?.uid
     fun signOut() = auth.signOut()
 
     fun logIn(email: String, password: String, onResult: (Boolean, String?) -> Unit) {
