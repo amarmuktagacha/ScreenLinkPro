@@ -62,6 +62,8 @@ import java.util.concurrent.atomic.AtomicReference
 private val Blue = Color(0xFF2563EB)
 private val Navy = Color(0xFF0F172A)
 private val SoftBlue = Color(0xFFEFF6FF)
+private val Green = Color(0xFF16A34A)
+private val SoftGreen = Color(0xFFF0FDF4)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,6 +100,7 @@ private fun ScreenLinkApp() {
         "host" -> HostScreen { page = "home" }
         "viewer" -> ViewerScreen { page = "home" }
         "account" -> AccountScreen { page = "home" }
+        "online_host" -> OnlineHostScreen(onBack = { page = "home" }, onNeedsLogin = { page = "account" })
     }
 }
 
@@ -125,13 +128,23 @@ private fun HomeScreen(navigate: (String) -> Unit) {
             Spacer(Modifier.height(22.dp))
             Text("ScreenLink Pro", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = Navy)
             Spacer(Modifier.height(8.dp))
-            Text("Fast, private screen sharing on your local Wi‑Fi", color = Color(0xFF64748B), fontSize = 15.sp)
-            Spacer(Modifier.height(48.dp))
+            Text("Screen sharing — on local Wi‑Fi or over the internet", color = Color(0xFF64748B), fontSize = 15.sp)
+            Spacer(Modifier.height(40.dp))
+
+            Text("LOCAL (same Wi‑Fi / hotspot)", color = Color(0xFF94A3B8), fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
+            Spacer(Modifier.height(8.dp))
             Button({ navigate("host") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(10.dp)); Text("Share my screen", fontWeight = FontWeight.SemiBold) }
             Spacer(Modifier.height(14.dp))
             OutlinedButton({ navigate("viewer") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Visibility, null); Spacer(Modifier.width(10.dp)); Text("View another screen", fontWeight = FontWeight.SemiBold) }
-            Spacer(Modifier.height(26.dp))
-            Text("Encrypted only by your private local network connection", color = Color(0xFF94A3B8), fontSize = 12.sp)
+
+            Spacer(Modifier.height(30.dp))
+            Text("ONLINE (over the internet, needs an account)", color = Color(0xFF94A3B8), fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
+            Spacer(Modifier.height(8.dp))
+            Button(
+                { navigate("online_host") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Green)
+            ) { Icon(Icons.Default.Public, null); Spacer(Modifier.width(10.dp)); Text("Go live online", fontWeight = FontWeight.SemiBold) }
+            Text("View a live device from screenlink-pro.web.app", color = Color(0xFF94A3B8), fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
         }
     }
 }
@@ -153,7 +166,7 @@ private fun AccountScreen(onBack: () -> Unit) {
             Text(email, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Spacer(Modifier.height(10.dp))
             Text(
-                "This device's sharing status now syncs to your ScreenLink Pro website. When you share your screen from here, it'll show as live at screenlink-pro.web.app.",
+                "Each account is its own device profile on the website. Anyone logged in to screenlink-pro.web.app can see which accounts are live right now and view them — this account included.",
                 color = Color(0xFF64748B), fontSize = 13.sp
             )
             Spacer(Modifier.height(28.dp))
@@ -165,7 +178,7 @@ private fun AccountScreen(onBack: () -> Unit) {
             Text(if (mode == "login") "Log in" else "Create an account", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = Navy)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Optional — only needed to view this screen from the website over the internet. Local sharing works fine without this.",
+                "Needed only for \"Go live online\" — viewing/being viewed over the internet from the website. Local sharing works fine without this.",
                 color = Color(0xFF64748B), fontSize = 13.sp
             )
             Spacer(Modifier.height(20.dp))
@@ -198,6 +211,64 @@ private fun AccountScreen(onBack: () -> Unit) {
     }
 }
 
+/**
+ * The internet-sharing counterpart to HostScreen. Deliberately has none of HostScreen's local
+ * Wi-Fi/IP requirements — it starts CaptureService with ONLINE=true, which marks this account
+ * live on the website regardless of whether a local network is available (mobile data is fine).
+ * Actual internet video delivery (WebRTC) is a separate, later step; today this wires up the
+ * account + live-status half of that end to end.
+ */
+@Composable
+private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
+    val context = LocalContext.current
+    val loggedIn = CloudSync.isLoggedIn()
+    var live by rememberSaveable { mutableStateOf(false) }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
+    val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            val service = Intent(context, CaptureService::class.java).apply {
+                action = CaptureService.START
+                putExtra(CaptureService.RESULT, result.resultCode)
+                putExtra(CaptureService.DATA, result.data)
+                putExtra(CaptureService.ONLINE, true)
+            }
+            try { ContextCompat.startForegroundService(context, service); live = true; error = null }
+            catch (e: Exception) { live = false; error = "Could not start sharing on this phone. Please allow screen capture and try again." }
+        }
+    }
+    AppScaffold("Go live online", { if (live) context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); onBack() }) {
+        if (!loggedIn) {
+            Spacer(Modifier.height(6.dp))
+            Text("You need an account for online sharing", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            Spacer(Modifier.height(8.dp))
+            Text("Log in or create a free account, then come back here to go live.", color = Color(0xFF64748B), fontSize = 13.sp)
+            Spacer(Modifier.height(20.dp))
+            Button(onNeedsLogin, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Log in / create account", fontWeight = FontWeight.Bold) }
+        } else {
+            Spacer(Modifier.height(6.dp))
+            Text("Signed in as ${CloudSync.currentEmail()}", color = Color(0xFF64748B), fontSize = 13.sp)
+            Spacer(Modifier.height(20.dp))
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = if (live) SoftGreen else SoftBlue)) {
+                Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(if (live) Icons.Default.Public else Icons.Default.CloudOff, null, Modifier.size(40.dp), tint = if (live) Green else Blue)
+                    Spacer(Modifier.height(10.dp))
+                    Text(if (live) "You're live" else "Not sharing online yet", fontWeight = FontWeight.Bold, color = if (live) Green else Blue)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (live) "Anyone logged in to screenlink-pro.web.app can view this screen right now."
+                        else "Start sharing to appear live on screenlink-pro.web.app — no Wi‑Fi needed, mobile data works.",
+                        color = Color(0xFF64748B), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 6.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            if (error != null) { ErrorCard(error!!); Spacer(Modifier.height(12.dp)) }
+            if (!live) Button({ projectionLauncher.launch((context.getSystemService(MediaProjectionManager::class.java)).createScreenCaptureIntent()) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), colors = ButtonDefaults.buttonColors(containerColor = Green)) { Text("Go live", fontWeight = FontWeight.Bold) }
+            else OutlinedButton({ context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); live = false }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Stop sharing") }
+        }
+    }
+}
+
 @Composable
 private fun HostScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -216,10 +287,10 @@ private fun HostScreen(onBack: () -> Unit) {
         }
     }
     val qrBitmap = remember(ip, code, wifiName, wifiPassword) { ip?.let { QrPairing.createBitmap(QrPairing.payload(it, 47821, code, wifiName.trim(), wifiPassword), 560) } }
-    AppScaffold("Share your screen", { if (sharing) context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); onBack() }) {
+    AppScaffold("Share my screen (local)", { if (sharing) context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); onBack() }) {
         Text("Connect both phones to the same Wi‑Fi or hotspot.", color = Color(0xFF64748B))
         Spacer(Modifier.height(20.dp))
-        if (ip == null) ErrorCard("No local network found. Connect to Wi‑Fi first.")
+        if (ip == null) ErrorCard("No local network found. Connect to Wi‑Fi first — or use \"Go live online\" from the home screen instead, which works over mobile data.")
         OutlinedTextField(value = wifiName, onValueChange = { wifiName = it }, label = { Text("Wi‑Fi / hotspot name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(value = wifiPassword, onValueChange = { wifiPassword = it }, label = { Text("Wi‑Fi password (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
