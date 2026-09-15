@@ -12,7 +12,8 @@ import com.google.firebase.firestore.SetOptions
  * Everything here is best-effort and silently no-ops when the user isn't logged in (currentUser
  * is null), so the existing local Wi-Fi sharing/viewing flow keeps working exactly as before,
  * with no account required. Logging in is only needed to make a device's live status visible on
- * the companion website (screenlink-pro.web.app).
+ * the companion website (screenlink-pro.web.app), where any logged-in account can see and view
+ * any other account's live device.
  */
 object CloudSync {
     private const val COLLECTION = "profiles"
@@ -36,15 +37,20 @@ object CloudSync {
             .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
     }
 
-    /** Creates the Firestore profile doc the first time this account logs in; leaves it alone if it already exists. */
+    /** Creates the Firestore profile doc the first time this account logs in; keeps email fresh on later logins. */
     private fun ensureProfile(onResult: (Boolean, String?) -> Unit) {
-        val uid = auth.currentUser?.uid ?: return onResult(false, "Not logged in")
-        val ref = db.collection(COLLECTION).document(uid)
+        val user = auth.currentUser ?: return onResult(false, "Not logged in")
+        val ref = db.collection(COLLECTION).document(user.uid)
         ref.get()
             .addOnSuccessListener { snap ->
-                if (snap.exists()) { onResult(true, null); return@addOnSuccessListener }
+                if (snap.exists()) {
+                    ref.set(mapOf("email" to (user.email ?: "")), SetOptions.merge())
+                    onResult(true, null)
+                    return@addOnSuccessListener
+                }
                 val data = hashMapOf(
                     "name" to (Build.MODEL ?: "My device"),
+                    "email" to (user.email ?: ""),
                     "isLive" to false,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
