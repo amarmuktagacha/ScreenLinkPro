@@ -59,8 +59,10 @@
     border-radius:16px;
     padding:28px 24px;
   }
+  .card + .card{ margin-top:16px; }
 
   h1{ font-family:'Space Grotesk', sans-serif; font-size:22px; font-weight:600; margin:0 0 6px; letter-spacing:-.01em;}
+  h2{ font-family:'Space Grotesk', sans-serif; font-size:15px; font-weight:600; margin:0 0 14px; letter-spacing:-.005em;}
   p.lead{ color:var(--text-muted); font-size:14px; line-height:1.55; margin:0 0 24px;}
 
   label{ display:block; font-size:13px; color:var(--text-muted); margin:0 0 6px;}
@@ -72,17 +74,19 @@
   input:focus{ outline:none; border-color:var(--action); }
 
   button{
-    width:100%; padding:12px 14px; border-radius:10px; border:none;
+    padding:12px 14px; border-radius:10px; border:none;
     font-family:'Inter', sans-serif; font-size:15px; font-weight:600; cursor:pointer;
     transition:background .15s ease, opacity .15s ease;
   }
   button:focus-visible{ outline:2px solid var(--action); outline-offset:2px; }
-  .btn-primary{ background:var(--action); color:#fff; }
+  .btn-primary{ width:100%; background:var(--action); color:#fff; }
   .btn-primary:hover{ background:var(--action-hover); }
   .btn-primary:disabled{ background:#3a4150; color:var(--text-muted); cursor:not-allowed; }
   .btn-ghost{ background:transparent; color:var(--text-muted); margin-top:10px; font-weight:500; font-size:14px; padding:6px; }
   .btn-ghost:hover{ color:var(--text); }
-  .btn-danger-ghost{ background:transparent; color:var(--danger); margin-top:14px; font-weight:500; font-size:13px; padding:4px; }
+  .btn-danger-ghost{ width:100%; background:transparent; color:var(--danger); margin-top:14px; font-weight:500; font-size:13px; padding:4px; }
+  .btn-small{ font-size:13px; padding:8px 14px; background:var(--live); color:#0b1710; flex:none; }
+  .btn-small:hover{ opacity:.9; }
 
   .error{ background:rgba(224,97,107,.1); border:1px solid rgba(224,97,107,.35); color:#f0929a;
     font-size:13px; padding:10px 12px; border-radius:9px; margin-bottom:16px; line-height:1.5; display:none; }
@@ -90,7 +94,6 @@
   /* Dashboard */
   .row-between{ display:flex; align-items:center; justify-content:space-between; margin-bottom:2px;}
   .device-name{ font-family:'Space Grotesk', sans-serif; font-size:19px; font-weight:600; }
-  .device-name-input{ margin-bottom:8px; font-family:'Space Grotesk', sans-serif; font-size:17px; font-weight:600; padding:9px 11px;}
   .device-sub{ color:var(--text-muted); font-size:13px; margin:0 0 22px; }
 
   .status-panel{
@@ -112,6 +115,19 @@
   .empty{ text-align:left; color:var(--text-muted); font-size:13.5px; line-height:1.6; }
   .empty b{ color:var(--text); font-weight:600; }
 
+  /* Live list */
+  .live-item{
+    display:flex; align-items:center; gap:12px;
+    border:1px solid var(--border); border-radius:12px;
+    padding:12px 14px; background:var(--surface-2);
+  }
+  .live-item + .live-item{ margin-top:8px; }
+  .live-item .dot{ width:9px; height:9px; border-radius:50%; background:var(--live); flex:none; box-shadow:0 0 0 0 var(--live-glow); animation:pulse 1.8s infinite; }
+  .live-item .info{ flex:1; min-width:0; }
+  .live-item .name{ font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .live-item .email{ font-size:12px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .live-empty{ color:var(--text-muted); font-size:13.5px; line-height:1.6; }
+
   footer{ text-align:center; color:var(--text-muted); font-size:12px; margin-top:22px; }
   .hidden{ display:none !important; }
   .toggle-line{ text-align:center; font-size:13.5px; color:var(--text-muted); margin-top:16px; }
@@ -125,25 +141,24 @@
       <div class="brand-text">ScreenLink Pro<span>Device status</span></div>
     </div>
 
-    <div class="card">
-
-      <!-- AUTH VIEW -->
-      <div id="auth-view">
-        <h1 id="auth-title">Log in</h1>
-        <p class="lead" id="auth-lead">Use the same email and password you'll sign in with on your phone.</p>
-        <div class="error" id="auth-error"></div>
-        <label for="email">Email</label>
-        <input id="email" type="email" autocomplete="email" placeholder="you@example.com" />
-        <label for="password">Password</label>
-        <input id="password" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
-        <button class="btn-primary" id="auth-submit">Log in</button>
-        <div class="toggle-line" id="auth-toggle">
-          New here? <a id="auth-toggle-link">Create an account</a>
-        </div>
+    <!-- AUTH VIEW -->
+    <div class="card" id="auth-view">
+      <h1 id="auth-title">Log in</h1>
+      <p class="lead" id="auth-lead">Use the same email and password you'll sign in with on your phone.</p>
+      <div class="error" id="auth-error"></div>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="email" placeholder="you@example.com" />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
+      <button class="btn-primary" id="auth-submit">Log in</button>
+      <div class="toggle-line" id="auth-toggle">
+        New here? <a id="auth-toggle-link">Create an account</a>
       </div>
+    </div>
 
-      <!-- DASHBOARD VIEW -->
-      <div id="dashboard-view" class="hidden">
+    <!-- DASHBOARD VIEW -->
+    <div id="dashboard-view" class="hidden">
+      <div class="card">
         <div id="profile-loaded">
           <div class="row-between">
             <div class="device-name" id="device-name-display">Your device</div>
@@ -157,8 +172,6 @@
               <span class="sub" id="status-sub">&nbsp;</span>
             </div>
           </div>
-
-          <button class="btn-primary" id="view-btn" disabled>View this screen</button>
         </div>
 
         <div id="profile-empty" class="empty hidden">
@@ -169,8 +182,14 @@
         <button class="btn-danger-ghost" id="signout-btn">Sign out</button>
       </div>
 
+      <div class="card">
+        <h2>Live now</h2>
+        <div id="live-list"></div>
+        <div id="live-empty" class="live-empty hidden">No one else is live right now.</div>
+      </div>
     </div>
-    <footer>Signed in with Firebase · your data stays private to your account</footer>
+
+    <footer>Signed in with Firebase · anyone signed in can see who else is live</footer>
   </div>
 
 <script type="module">
@@ -180,7 +199,7 @@
     createUserWithEmailAndPassword, signOut
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
   import {
-    getFirestore, doc, onSnapshot, setDoc, serverTimestamp
+    getFirestore, doc, collection, query, where, onSnapshot
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -215,11 +234,13 @@
   const statusDot = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
   const statusSub = document.getElementById('status-sub');
-  const viewBtn = document.getElementById('view-btn');
   const signoutBtn = document.getElementById('signout-btn');
+  const liveList = document.getElementById('live-list');
+  const liveEmpty = document.getElementById('live-empty');
 
   let mode = 'login'; // or 'signup'
   let unsubProfile = null;
+  let unsubLive = null;
 
   function toggleAuthMode() {
     mode = mode === 'login' ? 'signup' : 'login';
@@ -279,16 +300,19 @@
 
   onAuthStateChanged(auth, (user) => {
     if (unsubProfile) { unsubProfile(); unsubProfile = null; }
+    if (unsubLive) { unsubLive(); unsubLive = null; }
     if (user) {
       authView.classList.add('hidden');
       dashView.classList.remove('hidden');
       deviceEmailSub.textContent = user.email;
       watchProfile(user);
+      watchLiveDevices(user);
     } else {
       dashView.classList.add('hidden');
       authView.classList.remove('hidden');
       emailInput.value = '';
       passwordInput.value = '';
+      liveList.innerHTML = '';
     }
   });
 
@@ -308,22 +332,48 @@
       statusDot.classList.toggle('live', live);
       if (live) {
         statusText.childNodes[0].nodeValue = 'Live now ';
-        statusSub.textContent = 'Someone can view this screen right now.';
-        viewBtn.disabled = false;
-        viewBtn.textContent = 'View this screen';
+        statusSub.textContent = 'Other accounts can view this screen right now.';
       } else {
         statusText.childNodes[0].nodeValue = 'Offline ';
         statusSub.textContent = 'Sharing isn\'t turned on right now.';
-        viewBtn.disabled = true;
-        viewBtn.textContent = 'Not sharing right now';
       }
-      viewBtn.onclick = () => {
-        window.location.href = `screenlinkpro://view?uid=${user.uid}`;
-      };
     }, () => {
       profileLoaded.classList.add('hidden');
       profileEmpty.classList.remove('hidden');
       profileEmpty.innerHTML = "<b>Couldn't load your device.</b><br/>Check your connection and reload this page.";
+    });
+  }
+
+  function watchLiveDevices(currentUser) {
+    const q = query(collection(db, 'profiles'), where('isLive', '==', true));
+    unsubLive = onSnapshot(q, (snapshot) => {
+      const others = snapshot.docs.filter((d) => d.id !== currentUser.uid);
+      if (others.length === 0) {
+        liveList.innerHTML = '';
+        liveEmpty.classList.remove('hidden');
+        return;
+      }
+      liveEmpty.classList.add('hidden');
+      liveList.innerHTML = '';
+      others.forEach((d) => {
+        const data = d.data();
+        const row = document.createElement('div');
+        row.className = 'live-item';
+        const dot = document.createElement('div'); dot.className = 'dot';
+        const info = document.createElement('div'); info.className = 'info';
+        const name = document.createElement('div'); name.className = 'name'; name.textContent = data.name || 'A device';
+        const email = document.createElement('div'); email.className = 'email'; email.textContent = data.email || '';
+        info.appendChild(name); info.appendChild(email);
+        const viewBtn = document.createElement('button');
+        viewBtn.className = 'btn-small'; viewBtn.textContent = 'View';
+        viewBtn.onclick = () => { window.location.href = `screenlinkpro://view?uid=${d.id}`; };
+        row.appendChild(dot); row.appendChild(info); row.appendChild(viewBtn);
+        liveList.appendChild(row);
+      });
+    }, () => {
+      liveList.innerHTML = '';
+      liveEmpty.classList.remove('hidden');
+      liveEmpty.textContent = "Couldn't load live devices right now.";
     });
   }
 </script>
