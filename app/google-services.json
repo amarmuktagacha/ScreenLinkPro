@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "643199592935",
+    "project_id": "screenlink-pro",
+    "storage_bucket": "screenlink-pro.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:643199592935:android:489e341592a76b6b2fb542",
+        "android_client_info": {
+          "package_name": "com.screenlink.pro"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "643199592935-ag2li0u3qbgl8d5flb6nbk7u5rmst77e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDgCFVtjeAMMTtWv-2AddC2DBBXin5uBPM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "643199592935-ag2li0u3qbgl8d5flb6nbk7u5rmst77e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
