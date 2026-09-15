@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -51,6 +52,7 @@ import com.screenlink.pro.capture.CaptureService
 import com.screenlink.pro.capture.EncodedFrame
 import com.screenlink.pro.capture.H264Decoder
 import com.screenlink.pro.capture.PlaybackAudioPlayer
+import com.screenlink.pro.cloud.CloudSync
 import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
@@ -95,6 +97,7 @@ private fun ScreenLinkApp() {
         "home" -> HomeScreen { page = it }
         "host" -> HostScreen { page = "home" }
         "viewer" -> ViewerScreen { page = "home" }
+        "account" -> AccountScreen { page = "home" }
     }
 }
 
@@ -113,18 +116,85 @@ private fun AppScaffold(title: String, onBack: () -> Unit, scrollable: Boolean =
 
 @Composable
 private fun HomeScreen(navigate: (String) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Box(Modifier.size(92.dp).background(SoftBlue, RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Cast, null, Modifier.size(48.dp), tint = Blue) }
-        Spacer(Modifier.height(22.dp))
-        Text("ScreenLink Pro", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = Navy)
-        Spacer(Modifier.height(8.dp))
-        Text("Fast, private screen sharing on your local Wi‑Fi", color = Color(0xFF64748B), fontSize = 15.sp)
-        Spacer(Modifier.height(48.dp))
-        Button({ navigate("host") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(10.dp)); Text("Share my screen", fontWeight = FontWeight.SemiBold) }
-        Spacer(Modifier.height(14.dp))
-        OutlinedButton({ navigate("viewer") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Visibility, null); Spacer(Modifier.width(10.dp)); Text("View another screen", fontWeight = FontWeight.SemiBold) }
-        Spacer(Modifier.height(26.dp))
-        Text("Encrypted only by your private local network connection", color = Color(0xFF94A3B8), fontSize = 12.sp)
+    Box(Modifier.fillMaxSize()) {
+        IconButton(onClick = { navigate("account") }, modifier = Modifier.align(Alignment.TopEnd).padding(10.dp)) {
+            Icon(Icons.Default.AccountCircle, "Internet account", tint = if (CloudSync.isLoggedIn()) Blue else Color(0xFF94A3B8))
+        }
+        Column(Modifier.fillMaxSize().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Box(Modifier.size(92.dp).background(SoftBlue, RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Cast, null, Modifier.size(48.dp), tint = Blue) }
+            Spacer(Modifier.height(22.dp))
+            Text("ScreenLink Pro", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = Navy)
+            Spacer(Modifier.height(8.dp))
+            Text("Fast, private screen sharing on your local Wi‑Fi", color = Color(0xFF64748B), fontSize = 15.sp)
+            Spacer(Modifier.height(48.dp))
+            Button({ navigate("host") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(10.dp)); Text("Share my screen", fontWeight = FontWeight.SemiBold) }
+            Spacer(Modifier.height(14.dp))
+            OutlinedButton({ navigate("viewer") }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.Visibility, null); Spacer(Modifier.width(10.dp)); Text("View another screen", fontWeight = FontWeight.SemiBold) }
+            Spacer(Modifier.height(26.dp))
+            Text("Encrypted only by your private local network connection", color = Color(0xFF94A3B8), fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun AccountScreen(onBack: () -> Unit) {
+    var loggedIn by remember { mutableStateOf(CloudSync.isLoggedIn()) }
+    var email by remember { mutableStateOf(CloudSync.currentEmail() ?: "") }
+    var mode by rememberSaveable { mutableStateOf("login") }
+    var emailInput by rememberSaveable { mutableStateOf("") }
+    var passwordInput by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+
+    AppScaffold("Internet account", onBack) {
+        if (loggedIn) {
+            Spacer(Modifier.height(6.dp))
+            Text("Signed in as", color = Color(0xFF64748B), fontSize = 13.sp)
+            Text(email, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "This device's sharing status now syncs to your ScreenLink Pro website. When you share your screen from here, it'll show as live at screenlink-pro.web.app.",
+                color = Color(0xFF64748B), fontSize = 13.sp
+            )
+            Spacer(Modifier.height(28.dp))
+            OutlinedButton({ CloudSync.signOut(); loggedIn = false; email = ""; emailInput = ""; passwordInput = "" }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {
+                Text("Sign out")
+            }
+        } else {
+            Spacer(Modifier.height(6.dp))
+            Text(if (mode == "login") "Log in" else "Create an account", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = Navy)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Optional — only needed to view this screen from the website over the internet. Local sharing works fine without this.",
+                color = Color(0xFF64748B), fontSize = 13.sp
+            )
+            Spacer(Modifier.height(20.dp))
+            if (error != null) { ErrorCard(error!!); Spacer(Modifier.height(12.dp)) }
+            OutlinedTextField(value = emailInput, onValueChange = { emailInput = it; error = null }, label = { Text("Email") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(value = passwordInput, onValueChange = { passwordInput = it; error = null }, label = { Text("Password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(20.dp))
+            Button(
+                onClick = {
+                    error = null; loading = true
+                    val onResult: (Boolean, String?) -> Unit = { ok, message ->
+                        loading = false
+                        if (ok) { loggedIn = true; email = emailInput.trim() } else error = message ?: "Something went wrong. Please try again."
+                    }
+                    val trimmedEmail = emailInput.trim()
+                    if (mode == "login") CloudSync.logIn(trimmedEmail, passwordInput, onResult)
+                    else CloudSync.signUp(trimmedEmail, passwordInput, onResult)
+                },
+                modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp),
+                enabled = !loading && emailInput.isNotBlank() && passwordInput.length >= 6
+            ) {
+                Text(if (loading) "Please wait…" else if (mode == "login") "Log in" else "Create account", fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(14.dp))
+            TextButton(onClick = { mode = if (mode == "login") "signup" else "login"; error = null }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (mode == "login") "New here? Create an account" else "Already have an account? Log in")
+            }
+        }
     }
 }
 
