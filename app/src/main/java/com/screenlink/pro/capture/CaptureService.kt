@@ -14,6 +14,7 @@ import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.screenlink.pro.R
+import com.screenlink.pro.cloud.CloudSync
 import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenServer
 import com.screenlink.pro.util.Pairing
@@ -117,6 +118,9 @@ class CaptureService : Service() {
             newServer.onControl = { payload -> RemoteControlAccessibilityService.dispatch(payload) }
             newServer.start(); server = newServer
             running = true
+            // Optional: reflect "live" on the companion website if this device is logged in.
+            // No-ops silently when not logged in — local sharing needs no account.
+            CloudSync.setLive(true)
             encoderThread = Thread({ drainEncoder(setup.codec, newServer) }, "ScreenLinkEncoder").also { it.start() }
             startPlaybackAudio(activeProjection, newServer)
         } catch (error: Throwable) {
@@ -273,6 +277,7 @@ class CaptureService : Service() {
     private fun stopAll() {
         if (stopping) return
         stopping = true; running = false
+        CloudSync.setLive(false)
         val thread = encoderThread
         if (Thread.currentThread() !== thread) try { thread?.join(300) } catch (_: Exception) {}
         encoderThread = null
