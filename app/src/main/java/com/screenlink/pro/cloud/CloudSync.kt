@@ -1,0 +1,64 @@
+package com.screenlink.pro.cloud
+
+import android.os.Build
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
+
+/**
+ * Thin wrapper around Firebase Auth + Firestore for the optional internet-sharing mode.
+ *
+ * Everything here is best-effort and silently no-ops when the user isn't logged in (currentUser
+ * is null), so the existing local Wi-Fi sharing/viewing flow keeps working exactly as before,
+ * with no account required. Logging in is only needed to make a device's live status visible on
+ * the companion website (screenlink-pro.web.app).
+ */
+object CloudSync {
+    private const val COLLECTION = "profiles"
+
+    private val auth get() = FirebaseAuth.getInstance()
+    private val db get() = FirebaseFirestore.getInstance()
+
+    fun isLoggedIn(): Boolean = auth.currentUser != null
+    fun currentEmail(): String? = auth.currentUser?.email
+    fun signOut() = auth.signOut()
+
+    fun logIn(email: String, password: String, onResult: (Boolean, String?) -> Unit) {
+        auth.signInWithEmailAndPassword(email, password)
+            .addOnSuccessListener { ensureProfile(onResult) }
+            .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
+    }
+
+    fun signUp(email: String, password: String, onResult: (Boolean, String?) -> Unit) {
+        auth.createUserWithEmailAndPassword(email, password)
+            .addOnSuccessListener { ensureProfile(onResult) }
+            .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
+    }
+
+    /** Creates the Firestore profile doc the first time this account logs in; leaves it alone if it already exists. */
+    private fun ensureProfile(onResult: (Boolean, String?) -> Unit) {
+        val uid = auth.currentUser?.uid ?: return onResult(false, "Not logged in")
+        val ref = db.collection(COLLECTION).document(uid)
+        ref.get()
+            .addOnSuccessListener { snap ->
+                if (snap.exists()) { onResult(true, null); return@addOnSuccessListener }
+                val data = hashMapOf(
+                    "name" to (Build.MODEL ?: "My device"),
+                    "isLive" to false,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                ref.set(data)
+                    .addOnSuccessListener { onResult(true, null) }
+                    .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
+            }
+            .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
+    }
+
+    /** Fire-and-forget: reflects whether this device is currently sharing its screen. No-ops if not logged in. */
+    fun setLive(isLive: Boolean) {
+        val uid = auth.currentUser?.uid ?: return
+        db.collection(COLLECTION).document(uid)
+            .set(mapOf("isLive" to isLive, "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge())
+    }
+}
