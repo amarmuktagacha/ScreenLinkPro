@@ -29,5 +29,8 @@ dependencies {
     implementation platform('com.google.firebase:firebase-bom:32.7.0')
     implementation 'com.google.firebase:firebase-auth-ktx'
     implementation 'com.google.firebase:firebase-firestore-ktx'
+    // Internet video streaming for online sharing (Firestore-based signaling, see webrtc/ package).
+    // google-webrtc has been unmaintained since 2018; this is the actively-maintained replacement.
+    implementation 'io.getstream:stream-webrtc-android:1.3.10'
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }
