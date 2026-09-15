@@ -2,6 +2,7 @@ package com.screenlink.pro
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.Manifest
 import android.media.MediaCodec
@@ -46,6 +47,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.google.firebase.firestore.ListenerRegistration
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.screenlink.pro.capture.CaptureService
@@ -56,8 +58,24 @@ import com.screenlink.pro.cloud.CloudSync
 import com.screenlink.pro.control.RemoteControlAccessibilityService
 import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
+import com.screenlink.pro.webrtc.SdpObserverAdapter
+import com.screenlink.pro.webrtc.WebRtcHostService
+import com.screenlink.pro.webrtc.WebRtcSignaling
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
+import org.webrtc.DataChannel
+import org.webrtc.DefaultVideoDecoderFactory
+import org.webrtc.DefaultVideoEncoderFactory
+import org.webrtc.EglBase
+import org.webrtc.IceCandidate
+import org.webrtc.MediaConstraints
+import org.webrtc.MediaStream
+import org.webrtc.PeerConnection
+import org.webrtc.PeerConnectionFactory
+import org.webrtc.RtpReceiver
+import org.webrtc.SessionDescription
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 
 private val Blue = Color(0xFF2563EB)
 private val Navy = Color(0xFF0F172A)
@@ -66,13 +84,30 @@ private val Green = Color(0xFF16A34A)
 private val SoftGreen = Color(0xFFF0FDF4)
 
 class MainActivity : ComponentActivity() {
+    private val pendingViewUid = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestAppPermissions()
         if (!RemoteControlAccessibilityService.isEnabled()) {
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Exception) { }
         }
-        setContent { ScreenLinkTheme { ScreenLinkApp() } }
+        handleViewIntent(intent)
+        setContent { ScreenLinkTheme { ScreenLinkApp(pendingViewUid) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleViewIntent(intent)
+    }
+
+    /** Handles the website's "View this screen" button: screenlinkpro://view?uid=<hostUid> */
+    private fun handleViewIntent(intent: Intent?) {
+        val uri: Uri = intent?.data ?: return
+        if (uri.scheme == "screenlinkpro" && uri.host == "view") {
+            uri.getQueryParameter("uid")?.let { pendingViewUid.value = it }
+        }
     }
 
     private fun requestAppPermissions() {
@@ -93,14 +128,23 @@ private fun ScreenLinkTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ScreenLinkApp() {
+private fun ScreenLinkApp(pendingViewUid: MutableState<String?>) {
     var page by rememberSaveable { mutableStateOf("home") }
+    var viewerHostUid by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingViewUid.value) {
+        pendingViewUid.value?.let { uid -> viewerHostUid = uid; page = "online_viewer"; pendingViewUid.value = null }
+    }
     when (page) {
         "home" -> HomeScreen { page = it }
         "host" -> HostScreen { page = "home" }
         "viewer" -> ViewerScreen { page = "home" }
         "account" -> AccountScreen { page = "home" }
         "online_host" -> OnlineHostScreen(onBack = { page = "home" }, onNeedsLogin = { page = "account" })
+        "online_viewer" -> {
+            val uid = viewerHostUid
+            if (uid != null) OnlineViewerScreen(hostUid = uid, onBack = { page = "home" })
+            else HomeScreen { page = it }
+        }
     }
 }
 
@@ -212,11 +256,10 @@ private fun AccountScreen(onBack: () -> Unit) {
 }
 
 /**
- * The internet-sharing counterpart to HostScreen. Deliberately has none of HostScreen's local
- * Wi-Fi/IP requirements — it starts CaptureService with ONLINE=true, which marks this account
+ * The internet-sharing counterpart to HostScreen. No local Wi-Fi/IP requirement — starts
+ * WebRtcHostService, which captures the screen as a WebRTC video track and marks this account
  * live on the website regardless of whether a local network is available (mobile data is fine).
- * Actual internet video delivery (WebRTC) is a separate, later step; today this wires up the
- * account + live-status half of that end to end.
+ * Video only for now; system audio over the internet is a separate future addition.
  */
 @Composable
 private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
@@ -226,17 +269,16 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val service = Intent(context, CaptureService::class.java).apply {
-                action = CaptureService.START
-                putExtra(CaptureService.RESULT, result.resultCode)
-                putExtra(CaptureService.DATA, result.data)
-                putExtra(CaptureService.ONLINE, true)
+            val service = Intent(context, WebRtcHostService::class.java).apply {
+                action = WebRtcHostService.START
+                putExtra(WebRtcHostService.RESULT, result.resultCode)
+                putExtra(WebRtcHostService.DATA, result.data)
             }
             try { ContextCompat.startForegroundService(context, service); live = true; error = null }
             catch (e: Exception) { live = false; error = "Could not start sharing on this phone. Please allow screen capture and try again." }
         }
     }
-    AppScaffold("Go live online", { if (live) context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); onBack() }) {
+    AppScaffold("Go live online", { if (live) context.startService(Intent(context, WebRtcHostService::class.java).setAction(WebRtcHostService.STOP)); onBack() }) {
         if (!loggedIn) {
             Spacer(Modifier.height(6.dp))
             Text("You need an account for online sharing", fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -255,7 +297,7 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
                     Text(if (live) "You're live" else "Not sharing online yet", fontWeight = FontWeight.Bold, color = if (live) Green else Blue)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        if (live) "Anyone logged in to screenlink-pro.web.app can view this screen right now."
+                        if (live) "Anyone logged in to screenlink-pro.web.app can view this screen right now (video only, no audio yet)."
                         else "Start sharing to appear live on screenlink-pro.web.app — no Wi‑Fi needed, mobile data works.",
                         color = Color(0xFF64748B), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 6.dp)
                     )
@@ -264,7 +306,120 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
             Spacer(Modifier.height(20.dp))
             if (error != null) { ErrorCard(error!!); Spacer(Modifier.height(12.dp)) }
             if (!live) Button({ projectionLauncher.launch((context.getSystemService(MediaProjectionManager::class.java)).createScreenCaptureIntent()) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), colors = ButtonDefaults.buttonColors(containerColor = Green)) { Text("Go live", fontWeight = FontWeight.Bold) }
-            else OutlinedButton({ context.startService(Intent(context, CaptureService::class.java).setAction(CaptureService.STOP)); live = false }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Stop sharing") }
+            else OutlinedButton({ context.startService(Intent(context, WebRtcHostService::class.java).setAction(WebRtcHostService.STOP)); live = false }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Stop sharing") }
+        }
+    }
+}
+
+/**
+ * Receives another account's live screen over the internet via WebRTC, opened either from the
+ * home screen's "Go live online" area (future: a browse list) or from the website's "View"
+ * button through the screenlinkpro://view deep link. Reached without a local network.
+ */
+@Composable
+private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
+    var status by rememberSaveable { mutableStateOf("Connecting…") }
+    var connected by rememberSaveable { mutableStateOf(false) }
+    val eglBase = remember { EglBase.create() }
+    val rendererState = remember { mutableStateOf<SurfaceViewRenderer?>(null) }
+    val remoteTrackState = remember { mutableStateOf<VideoTrack?>(null) }
+
+    fun attachIfReady() {
+        val renderer = rendererState.value ?: return
+        val track = remoteTrackState.value ?: return
+        try { track.addSink(renderer) } catch (_: Exception) {}
+    }
+
+    DisposableEffect(hostUid) {
+        val viewerUid = CloudSync.currentUid()
+        if (viewerUid == null) {
+            status = "Please log in first."
+            return@DisposableEffect onDispose {}
+        }
+        val factory = PeerConnectionFactory.builder()
+            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
+            .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
+            .createPeerConnectionFactory()
+        val rtcConfig = PeerConnection.RTCConfiguration(WebRtcSignaling.iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        }
+        var answerListener: ListenerRegistration? = null
+        var candidatesListener: ListenerRegistration? = null
+        val handler = Handler(Looper.getMainLooper())
+
+        val pc = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+            override fun onIceCandidate(candidate: IceCandidate) { WebRtcSignaling.addViewerCandidate(hostUid, candidate) }
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
+            override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                handler.post {
+                    when (state) {
+                        PeerConnection.IceConnectionState.CONNECTED -> { connected = true; status = "Live" }
+                        PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED -> status = "Connection lost — the host may have stopped sharing."
+                        else -> {}
+                    }
+                }
+            }
+            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+            override fun onAddStream(stream: MediaStream?) {
+                val track = stream?.videoTracks?.firstOrNull() ?: return
+                handler.post { remoteTrackState.value = track; attachIfReady() }
+            }
+            override fun onRemoveStream(stream: MediaStream?) {}
+            override fun onDataChannel(channel: DataChannel?) {}
+            override fun onRenegotiationNeeded() {}
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                val track = receiver?.track() as? VideoTrack ?: return
+                handler.post { remoteTrackState.value = track; attachIfReady() }
+            }
+        })
+
+        if (pc == null) {
+            status = "Couldn't start the connection on this device."
+        } else {
+            pc.createOffer(object : SdpObserverAdapter() {
+                override fun onCreateSuccess(sdp: SessionDescription?) {
+                    if (sdp == null) return
+                    pc.setLocalDescription(SdpObserverAdapter(), sdp)
+                    WebRtcSignaling.sendOffer(hostUid, viewerUid, sdp) { ok ->
+                        if (!ok) handler.post { status = "Couldn't reach the host. Check your connection and try again." }
+                    }
+                }
+            }, MediaConstraints())
+
+            answerListener = WebRtcSignaling.listenForAnswer(hostUid) { answer ->
+                handler.post { try { pc.setRemoteDescription(SdpObserverAdapter(), answer) } catch (_: Exception) {} }
+            }
+            candidatesListener = WebRtcSignaling.listenForHostCandidates(hostUid) { candidate ->
+                handler.post { try { pc.addIceCandidate(candidate) } catch (_: Exception) {} }
+            }
+        }
+
+        onDispose {
+            answerListener?.remove()
+            candidatesListener?.remove()
+            try { pc?.close() } catch (_: Exception) {}
+            try { factory.dispose() } catch (_: Exception) {}
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { try { eglBase.release() } catch (_: Exception) {} } }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(modifier = Modifier.fillMaxSize(), factory = { c ->
+            SurfaceViewRenderer(c).apply {
+                init(eglBase.eglBaseContext, null)
+                setMirror(false)
+                rendererState.value = this
+                attachIfReady()
+            }
+        })
+        if (!connected) Box(Modifier.align(Alignment.Center).background(Color(0xAA000000), RoundedCornerShape(14.dp)).padding(horizontal = 20.dp, vertical = 14.dp)) {
+            Text(status, color = Color.White, fontSize = 14.sp)
+        }
+        IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(10.dp)) {
+            Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
         }
     }
 }
