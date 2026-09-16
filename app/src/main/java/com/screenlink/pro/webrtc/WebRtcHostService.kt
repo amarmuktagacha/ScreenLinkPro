@@ -39,10 +39,17 @@ import org.webrtc.VideoTrack
  * this is what "Go live online" on the home screen starts.
  *
  * Video only for now; system-audio-over-WebRTC is a separate future addition.
+ *
+ * Broadcasts ACTION_STATE whenever the real live/offline state changes, so the UI never shows
+ * "You're live" based on merely having launched the service — only once this service confirms
+ * the capture + signaling pipeline actually came up (or reports why it didn't).
  */
 class WebRtcHostService : Service() {
     companion object {
         const val START = "start"; const val STOP = "stop"; const val DATA = "data"; const val RESULT = "result"
+        const val ACTION_STATE = "com.screenlink.pro.webrtc.HOST_STATE"
+        const val EXTRA_LIVE = "live"
+        const val EXTRA_ERROR = "error"
         private const val TAG = "WebRtcHost"; private const val CHANNEL = "screenlink_online"; private const val NOTIFICATION_ID = 21
     }
 
@@ -75,10 +82,20 @@ class WebRtcHostService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun broadcastState(live: Boolean, error: String? = null) {
+        Log.i(TAG, "State -> live=$live${if (error != null) " error=$error" else ""}")
+        try {
+            sendBroadcast(Intent(ACTION_STATE).setPackage(packageName).apply {
+                putExtra(EXTRA_LIVE, live)
+                if (error != null) putExtra(EXTRA_ERROR, error)
+            })
+        } catch (e: Exception) { Log.w(TAG, "Could not broadcast state", e) }
+    }
+
     private fun startHosting(intent: Intent) {
         if (running) return
         val uid = CloudSync.currentUid()
-        if (uid == null) { stopSelf(); return }
+        if (uid == null) { broadcastState(false, "Please log in first."); stopSelf(); return }
         hostUid = uid
         try {
             val result = intent.getIntExtra(RESULT, Activity.RESULT_CANCELED)
@@ -123,13 +140,17 @@ class WebRtcHostService : Service() {
             videoTrack = track
 
             running = true
-            CloudSync.setLive(true)
+            CloudSync.setLive(true) { ok -> if (!ok) Log.w(TAG, "Live-status write to Firestore did not confirm success") }
             offerListener = WebRtcSignaling.listenForOffer(uid) { offer, viewerUid ->
                 Handler(Looper.getMainLooper()).post { answerCall(uid, pcFactory, track, offer, viewerUid) }
             }
+            broadcastState(true)
         } catch (error: Throwable) {
             Log.e(TAG, "Online hosting failed to start", error)
-            stopAll(); stopSelf()
+            val message = error.message ?: error.javaClass.simpleName
+            stopAll()
+            broadcastState(false, message)
+            stopSelf()
         }
     }
 
@@ -152,7 +173,8 @@ class WebRtcHostService : Service() {
             override fun onDataChannel(channel: DataChannel?) {}
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
-        }) ?: return
+        })
+        if (pc == null) { Log.e(TAG, "createPeerConnection returned null"); return }
         peerConnection = pc
         pc.addTrack(track, listOf("screenlink_stream_$uid"))
 
@@ -226,6 +248,7 @@ class WebRtcHostService : Service() {
         projection = null
         hostUid = null
         if (Build.VERSION.SDK_INT >= 24) try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+        broadcastState(false)
     }
 
     override fun onDestroy() { stopAll(); super.onDestroy() }
