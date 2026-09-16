@@ -1,6 +1,7 @@
 package com.screenlink.pro.cloud
 
 import android.os.Build
+import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -17,6 +18,7 @@ import com.google.firebase.firestore.SetOptions
  */
 object CloudSync {
     private const val COLLECTION = "profiles"
+    private const val TAG = "CloudSync"
 
     private val auth get() = FirebaseAuth.getInstance()
     private val db get() = FirebaseFirestore.getInstance()
@@ -62,10 +64,17 @@ object CloudSync {
             .addOnFailureListener { e -> onResult(false, e.localizedMessage) }
     }
 
-    /** Fire-and-forget: reflects whether this device is currently sharing its screen. No-ops if not logged in. */
-    fun setLive(isLive: Boolean) {
-        val uid = auth.currentUser?.uid ?: return
+    /**
+     * Reflects whether this device is currently sharing its screen. No-ops if not logged in.
+     * [onResult] is optional — pass it when the caller needs to know the write actually landed
+     * (e.g. WebRtcHostService, so it can broadcast a truthful live/offline state instead of
+     * assuming success).
+     */
+    fun setLive(isLive: Boolean, onResult: ((Boolean) -> Unit)? = null) {
+        val uid = auth.currentUser?.uid ?: return onResult?.invoke(false) ?: Unit
         db.collection(COLLECTION).document(uid)
             .set(mapOf("isLive" to isLive, "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge())
+            .addOnSuccessListener { onResult?.invoke(true) }
+            .addOnFailureListener { e -> Log.e(TAG, "setLive($isLive) failed", e); onResult?.invoke(false) }
     }
 }
