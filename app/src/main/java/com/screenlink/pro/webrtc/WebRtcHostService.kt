@@ -99,6 +99,7 @@ class WebRtcHostService : Service() {
 
             val eb = EglBase.create()
             eglBase = eb
+            WebRtcInit.ensure(applicationContext)
             val pcFactory = PeerConnectionFactory.builder()
                 .setVideoEncoderFactory(DefaultVideoEncoderFactory(eb.eglBaseContext, true, true))
                 .setVideoDecoderFactory(DefaultVideoDecoderFactory(eb.eglBaseContext))

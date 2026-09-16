@@ -60,6 +60,7 @@ import com.screenlink.pro.network.ScreenClient
 import com.screenlink.pro.util.*
 import com.screenlink.pro.webrtc.SdpObserverAdapter
 import com.screenlink.pro.webrtc.WebRtcHostService
+import com.screenlink.pro.webrtc.WebRtcInit
 import com.screenlink.pro.webrtc.WebRtcSignaling
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
@@ -336,6 +337,7 @@ private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
             status = "Please log in first."
             return@DisposableEffect onDispose {}
         }
+        WebRtcInit.ensure(context)
         val factory = PeerConnectionFactory.builder()
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
