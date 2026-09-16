@@ -156,16 +156,33 @@ class WebRtcHostService : Service() {
         peerConnection = pc
         pc.addTrack(track, listOf("screenlink_stream_$uid"))
 
-        pc.setRemoteDescription(SdpObserverAdapter(), offer)
-        pc.createAnswer(object : SdpObserverAdapter() {
-            override fun onCreateSuccess(sdp: SessionDescription?) {
-                if (sdp == null) return
-                pc.setLocalDescription(SdpObserverAdapter(), sdp)
-                WebRtcSignaling.sendAnswer(uid, sdp) {}
-            }
-        }, MediaConstraints())
+        val pendingCandidates = mutableListOf<IceCandidate>()
+        var remoteDescriptionSet = false
+        fun addCandidateWhenReady(candidate: IceCandidate) {
+            if (remoteDescriptionSet) pc.addIceCandidate(candidate) else synchronized(pendingCandidates) { pendingCandidates += candidate }
+        }
+        candidatesListener = WebRtcSignaling.listenForViewerCandidates(uid) { candidate -> addCandidateWhenReady(candidate) }
 
-        candidatesListener = WebRtcSignaling.listenForViewerCandidates(uid) { candidate -> pc.addIceCandidate(candidate) }
+        pc.setRemoteDescription(object : SdpObserverAdapter() {
+            override fun onSetSuccess() {
+                remoteDescriptionSet = true
+                synchronized(pendingCandidates) {
+                    pendingCandidates.forEach { pc.addIceCandidate(it) }
+                    pendingCandidates.clear()
+                }
+                pc.createAnswer(object : SdpObserverAdapter() {
+                    override fun onCreateSuccess(sdp: SessionDescription?) {
+                        if (sdp == null) return
+                        pc.setLocalDescription(object : SdpObserverAdapter() {
+                            override fun onSetSuccess() { WebRtcSignaling.sendAnswer(uid, sdp) {} }
+                            override fun onSetFailure(error: String?) { Log.e(TAG, "Host setLocalDescription failed: $error") }
+                        }, sdp)
+                    }
+                    override fun onCreateFailure(error: String?) { Log.e(TAG, "Host createAnswer failed: $error") }
+                }, MediaConstraints())
+            }
+            override fun onSetFailure(error: String?) { Log.e(TAG, "Host setRemoteDescription failed: $error") }
+        }, offer)
     }
 
     private fun startForegroundSafely() {

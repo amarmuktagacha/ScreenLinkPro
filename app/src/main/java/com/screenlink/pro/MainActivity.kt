@@ -349,6 +349,8 @@ private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
         var answerListener: ListenerRegistration? = null
         var candidatesListener: ListenerRegistration? = null
         val handler = Handler(Looper.getMainLooper())
+        val pendingHostCandidates = mutableListOf<IceCandidate>()
+        var remoteDescriptionSet = false
 
         val pc = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) { WebRtcSignaling.addViewerCandidate(hostUid, candidate) }
@@ -381,22 +383,42 @@ private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
         if (pc == null) {
             status = "Couldn't start the connection on this device."
         } else {
+            answerListener = WebRtcSignaling.listenForAnswer(hostUid) { answer ->
+                handler.post {
+                    try {
+                        pc.setRemoteDescription(object : SdpObserverAdapter() {
+                            override fun onSetSuccess() {
+                                remoteDescriptionSet = true
+                                synchronized(pendingHostCandidates) {
+                                    pendingHostCandidates.forEach { pc.addIceCandidate(it) }
+                                    pendingHostCandidates.clear()
+                                }
+                            }
+                            override fun onSetFailure(error: String?) { status = "Viewer could not apply the host response." }
+                        }, answer)
+                    } catch (_: Exception) { status = "Viewer could not apply the host response." }
+                }
+            }
+            candidatesListener = WebRtcSignaling.listenForHostCandidates(hostUid) { candidate ->
+                handler.post {
+                    if (remoteDescriptionSet) try { pc.addIceCandidate(candidate) } catch (_: Exception) {}
+                    else synchronized(pendingHostCandidates) { pendingHostCandidates += candidate }
+                }
+            }
             pc.createOffer(object : SdpObserverAdapter() {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
                     if (sdp == null) return
-                    pc.setLocalDescription(SdpObserverAdapter(), sdp)
-                    WebRtcSignaling.sendOffer(hostUid, viewerUid, sdp) { ok ->
-                        if (!ok) handler.post { status = "Couldn't reach the host. Check your connection and try again." }
-                    }
+                    pc.setLocalDescription(object : SdpObserverAdapter() {
+                        override fun onSetSuccess() {
+                            WebRtcSignaling.sendOffer(hostUid, viewerUid, sdp) { ok ->
+                                if (!ok) handler.post { status = "Couldn't reach the host. Check your connection and try again." }
+                            }
+                        }
+                        override fun onSetFailure(error: String?) { handler.post { status = "Viewer could not start the connection." } }
+                    }, sdp)
                 }
+                override fun onCreateFailure(error: String?) { handler.post { status = "Viewer could not create the connection." } }
             }, MediaConstraints())
-
-            answerListener = WebRtcSignaling.listenForAnswer(hostUid) { answer ->
-                handler.post { try { pc.setRemoteDescription(SdpObserverAdapter(), answer) } catch (_: Exception) {} }
-            }
-            candidatesListener = WebRtcSignaling.listenForHostCandidates(hostUid) { candidate ->
-                handler.post { try { pc.addIceCandidate(candidate) } catch (_: Exception) {} }
-            }
         }
 
         onDispose {
