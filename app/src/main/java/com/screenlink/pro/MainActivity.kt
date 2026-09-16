@@ -319,6 +319,7 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
  */
 @Composable
 private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
+    val context = LocalContext.current
     var status by rememberSaveable { mutableStateOf("Connecting…") }
     var connected by rememberSaveable { mutableStateOf(false) }
     val eglBase = remember { EglBase.create() }
