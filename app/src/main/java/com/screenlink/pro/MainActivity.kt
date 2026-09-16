@@ -351,6 +351,7 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
  */
 @Composable
 private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
+    val context = LocalContext.current
     var status by rememberSaveable { mutableStateOf("Connecting…") }
     var connected by rememberSaveable { mutableStateOf(false) }
     val eglBase = remember { EglBase.create() }
@@ -369,8 +370,92 @@ private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
             status = "Please log in first."
             return@DisposableEffect onDispose {}
         }
-        WebRtcInit.ensure(context = eglBase.let { /* no-op, context obtained below */ Unit }.let { rendererState.value?.context } ?: Unit.let { null } ?: return@DisposableEffect onDispose {})
-        onDispose {}
+        WebRtcInit.ensure(context)
+        val handler = Handler(Looper.getMainLooper())
+        val factory = PeerConnectionFactory.builder()
+            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
+            .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
+            .createPeerConnectionFactory()
+        val rtcConfig = PeerConnection.RTCConfiguration(WebRtcSignaling.iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        }
+        var answerListener: ListenerRegistration? = null
+        var candidatesListener: ListenerRegistration? = null
+        val pendingCandidates = mutableListOf<IceCandidate>()
+        var remoteDescriptionSet = false
+
+        val pc = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+            override fun onIceCandidate(candidate: IceCandidate) { WebRtcSignaling.addViewerCandidate(hostUid, candidate) }
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
+            override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                handler.post {
+                    when (state) {
+                        PeerConnection.IceConnectionState.CONNECTED -> { connected = true; status = "Live" }
+                        PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED ->
+                            status = "Connection lost — the host may have stopped sharing."
+                        else -> {}
+                    }
+                }
+            }
+            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+            override fun onAddStream(stream: MediaStream?) {
+                val track = stream?.videoTracks?.firstOrNull() ?: return
+                handler.post { remoteTrackState.value = track; attachIfReady() }
+            }
+            override fun onRemoveStream(stream: MediaStream?) {}
+            override fun onDataChannel(channel: DataChannel?) {}
+            override fun onRenegotiationNeeded() {}
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                val track = receiver?.track() as? VideoTrack ?: return
+                handler.post { remoteTrackState.value = track; attachIfReady() }
+            }
+        })
+
+        if (pc == null) {
+            status = "Couldn't start the connection on this device."
+        } else {
+            candidatesListener = WebRtcSignaling.listenForHostCandidates(hostUid) { candidate ->
+                handler.post {
+                    if (remoteDescriptionSet) { try { pc.addIceCandidate(candidate) } catch (_: Exception) {} }
+                    else synchronized(pendingCandidates) { pendingCandidates += candidate }
+                }
+            }
+            answerListener = WebRtcSignaling.listenForAnswer(hostUid) { answer ->
+                handler.post {
+                    try {
+                        pc.setRemoteDescription(object : SdpObserverAdapter() {
+                            override fun onSetSuccess() {
+                                remoteDescriptionSet = true
+                                synchronized(pendingCandidates) {
+                                    pendingCandidates.forEach { try { pc.addIceCandidate(it) } catch (_: Exception) {} }
+                                    pendingCandidates.clear()
+                                }
+                            }
+                            override fun onSetFailure(error: String?) { handler.post { status = "Couldn't connect: $error" } }
+                        }, answer)
+                    } catch (_: Exception) {}
+                }
+            }
+            pc.createOffer(object : SdpObserverAdapter() {
+                override fun onCreateSuccess(sdp: SessionDescription?) {
+                    if (sdp == null) return
+                    pc.setLocalDescription(SdpObserverAdapter(), sdp)
+                    WebRtcSignaling.sendOffer(hostUid, viewerUid, sdp) { ok ->
+                        if (!ok) handler.post { status = "Couldn't reach the host. Check your connection and try again." }
+                    }
+                }
+                override fun onCreateFailure(error: String?) { handler.post { status = "Couldn't start the connection: $error" } }
+            }, MediaConstraints())
+        }
+
+        onDispose {
+            answerListener?.remove()
+            candidatesListener?.remove()
+            try { pc?.close() } catch (_: Exception) {}
+            try { factory.dispose() } catch (_: Exception) {}
+        }
     }
 
     DisposableEffect(Unit) { onDispose { try { eglBase.release() } catch (_: Exception) {} } }
