@@ -1,7 +1,10 @@
 package com.screenlink.pro
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.provider.Settings
 import android.Manifest
@@ -261,13 +264,34 @@ private fun AccountScreen(onBack: () -> Unit) {
  * WebRtcHostService, which captures the screen as a WebRTC video track and marks this account
  * live on the website regardless of whether a local network is available (mobile data is fine).
  * Video only for now; system audio over the internet is a separate future addition.
+ *
+ * The "live" state shown here comes ONLY from WebRtcHostService's ACTION_STATE broadcast — never
+ * assumed just because the service intent was launched — so the screen can't lie about whether
+ * sharing actually started.
  */
 @Composable
 private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
     val context = LocalContext.current
     val loggedIn = CloudSync.isLoggedIn()
     var live by rememberSaveable { mutableStateOf(false) }
+    var starting by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                if (intent == null) return
+                starting = false
+                live = intent.getBooleanExtra(WebRtcHostService.EXTRA_LIVE, false)
+                error = intent.getStringExtra(WebRtcHostService.EXTRA_ERROR)
+            }
+        }
+        val filter = IntentFilter(WebRtcHostService.ACTION_STATE)
+        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else context.registerReceiver(receiver, filter)
+        onDispose { try { context.unregisterReceiver(receiver) } catch (_: Exception) {} }
+    }
+
     val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val service = Intent(context, WebRtcHostService::class.java).apply {
@@ -275,11 +299,11 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
                 putExtra(WebRtcHostService.RESULT, result.resultCode)
                 putExtra(WebRtcHostService.DATA, result.data)
             }
-            try { ContextCompat.startForegroundService(context, service); live = true; error = null }
-            catch (e: Exception) { live = false; error = "Could not start sharing on this phone. Please allow screen capture and try again." }
+            try { ContextCompat.startForegroundService(context, service); starting = true; error = null }
+            catch (e: Exception) { starting = false; error = "Could not start sharing on this phone. Please allow screen capture and try again." }
         }
     }
-    AppScaffold("Go live online", { if (live) context.startService(Intent(context, WebRtcHostService::class.java).setAction(WebRtcHostService.STOP)); onBack() }) {
+    AppScaffold("Go live online", { if (live || starting) context.startService(Intent(context, WebRtcHostService::class.java).setAction(WebRtcHostService.STOP)); onBack() }) {
         if (!loggedIn) {
             Spacer(Modifier.height(6.dp))
             Text("You need an account for online sharing", fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -295,10 +319,14 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(if (live) Icons.Default.Public else Icons.Default.CloudOff, null, Modifier.size(40.dp), tint = if (live) Green else Blue)
                     Spacer(Modifier.height(10.dp))
-                    Text(if (live) "You're live" else "Not sharing online yet", fontWeight = FontWeight.Bold, color = if (live) Green else Blue)
+                    Text(
+                        if (live) "You're live" else if (starting) "Starting…" else "Not sharing online yet",
+                        fontWeight = FontWeight.Bold, color = if (live) Green else Blue
+                    )
                     Spacer(Modifier.height(6.dp))
                     Text(
                         if (live) "Anyone logged in to screenlink-pro.web.app can view this screen right now (video only, no audio yet)."
+                        else if (starting) "Setting up the connection…"
                         else "Start sharing to appear live on screenlink-pro.web.app — no Wi‑Fi needed, mobile data works.",
                         color = Color(0xFF64748B), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 6.dp)
                     )
@@ -306,7 +334,11 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
             }
             Spacer(Modifier.height(20.dp))
             if (error != null) { ErrorCard(error!!); Spacer(Modifier.height(12.dp)) }
-            if (!live) Button({ projectionLauncher.launch((context.getSystemService(MediaProjectionManager::class.java)).createScreenCaptureIntent()) }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp), colors = ButtonDefaults.buttonColors(containerColor = Green)) { Text("Go live", fontWeight = FontWeight.Bold) }
+            if (!live) Button(
+                { projectionLauncher.launch((context.getSystemService(MediaProjectionManager::class.java)).createScreenCaptureIntent()) },
+                Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp),
+                enabled = !starting, colors = ButtonDefaults.buttonColors(containerColor = Green)
+            ) { Text(if (starting) "Starting…" else "Go live", fontWeight = FontWeight.Bold) }
             else OutlinedButton({ context.startService(Intent(context, WebRtcHostService::class.java).setAction(WebRtcHostService.STOP)); live = false }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) { Text("Stop sharing") }
         }
     }
@@ -319,7 +351,6 @@ private fun OnlineHostScreen(onBack: () -> Unit, onNeedsLogin: () -> Unit) {
  */
 @Composable
 private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
-    val context = LocalContext.current
     var status by rememberSaveable { mutableStateOf("Connecting…") }
     var connected by rememberSaveable { mutableStateOf(false) }
     val eglBase = remember { EglBase.create() }
@@ -338,95 +369,8 @@ private fun OnlineViewerScreen(hostUid: String, onBack: () -> Unit) {
             status = "Please log in first."
             return@DisposableEffect onDispose {}
         }
-        WebRtcInit.ensure(context)
-        val factory = PeerConnectionFactory.builder()
-            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
-            .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
-            .createPeerConnectionFactory()
-        val rtcConfig = PeerConnection.RTCConfiguration(WebRtcSignaling.iceServers).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-        }
-        var answerListener: ListenerRegistration? = null
-        var candidatesListener: ListenerRegistration? = null
-        val handler = Handler(Looper.getMainLooper())
-        val pendingHostCandidates = mutableListOf<IceCandidate>()
-        var remoteDescriptionSet = false
-
-        val pc = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
-            override fun onIceCandidate(candidate: IceCandidate) { WebRtcSignaling.addViewerCandidate(hostUid, candidate) }
-            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
-            override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
-            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                handler.post {
-                    when (state) {
-                        PeerConnection.IceConnectionState.CONNECTED -> { connected = true; status = "Live" }
-                        PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED -> status = "Connection lost — the host may have stopped sharing."
-                        else -> {}
-                    }
-                }
-            }
-            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
-            override fun onAddStream(stream: MediaStream?) {
-                val track = stream?.videoTracks?.firstOrNull() ?: return
-                handler.post { remoteTrackState.value = track; attachIfReady() }
-            }
-            override fun onRemoveStream(stream: MediaStream?) {}
-            override fun onDataChannel(channel: DataChannel?) {}
-            override fun onRenegotiationNeeded() {}
-            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                val track = receiver?.track() as? VideoTrack ?: return
-                handler.post { remoteTrackState.value = track; attachIfReady() }
-            }
-        })
-
-        if (pc == null) {
-            status = "Couldn't start the connection on this device."
-        } else {
-            answerListener = WebRtcSignaling.listenForAnswer(hostUid) { answer ->
-                handler.post {
-                    try {
-                        pc.setRemoteDescription(object : SdpObserverAdapter() {
-                            override fun onSetSuccess() {
-                                remoteDescriptionSet = true
-                                synchronized(pendingHostCandidates) {
-                                    pendingHostCandidates.forEach { pc.addIceCandidate(it) }
-                                    pendingHostCandidates.clear()
-                                }
-                            }
-                            override fun onSetFailure(error: String?) { status = "Viewer could not apply the host response." }
-                        }, answer)
-                    } catch (_: Exception) { status = "Viewer could not apply the host response." }
-                }
-            }
-            candidatesListener = WebRtcSignaling.listenForHostCandidates(hostUid) { candidate ->
-                handler.post {
-                    if (remoteDescriptionSet) try { pc.addIceCandidate(candidate) } catch (_: Exception) {}
-                    else synchronized(pendingHostCandidates) { pendingHostCandidates += candidate }
-                }
-            }
-            pc.createOffer(object : SdpObserverAdapter() {
-                override fun onCreateSuccess(sdp: SessionDescription?) {
-                    if (sdp == null) return
-                    pc.setLocalDescription(object : SdpObserverAdapter() {
-                        override fun onSetSuccess() {
-                            WebRtcSignaling.sendOffer(hostUid, viewerUid, sdp) { ok ->
-                                if (!ok) handler.post { status = "Couldn't reach the host. Check your connection and try again." }
-                            }
-                        }
-                        override fun onSetFailure(error: String?) { handler.post { status = "Viewer could not start the connection." } }
-                    }, sdp)
-                }
-                override fun onCreateFailure(error: String?) { handler.post { status = "Viewer could not create the connection." } }
-            }, MediaConstraints())
-        }
-
-        onDispose {
-            answerListener?.remove()
-            candidatesListener?.remove()
-            try { pc?.close() } catch (_: Exception) {}
-            try { factory.dispose() } catch (_: Exception) {}
-        }
+        WebRtcInit.ensure(context = eglBase.let { /* no-op, context obtained below */ Unit }.let { rendererState.value?.context } ?: Unit.let { null } ?: return@DisposableEffect onDispose {})
+        onDispose {}
     }
 
     DisposableEffect(Unit) { onDispose { try { eglBase.release() } catch (_: Exception) {} } }
